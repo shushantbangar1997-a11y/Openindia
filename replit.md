@@ -1,27 +1,19 @@
-# Workspace
+# Rapid X AI
 
-## Overview
+Outbound voice agent dispatcher dashboard. Imported from a Vercel/Next.js project (`.migration-backup/dashboard`) and ported to the Replit pnpm monorepo.
 
-pnpm workspace monorepo using TypeScript. Each package manages its own dependencies.
+## Architecture
 
-## Stack
+- **`artifacts/rapid-x`** — React + Vite frontend (was Next.js `app/` router). Two cards: `CallDispatcher` (single call) and `BulkDialer` (batch). Dark UI with Tailwind v4, lucide-react icons, Inter font.
+- **`artifacts/api-server`** — Shared Express backend. Exposes `POST /api/dispatch` and `POST /api/queue`, which use `livekit-server-sdk` (`SipClient` + `RoomServiceClient`) to dial numbers via the Vobiz SIP trunk.
+- **`artifacts/mockup-sandbox`** — Scaffold (unused).
 
-- **Monorepo tool**: pnpm workspaces
-- **Node.js version**: 24
-- **Package manager**: pnpm
-- **TypeScript version**: 5.9
-- **API framework**: Express 5
-- **Database**: PostgreSQL + Drizzle ORM
-- **Validation**: Zod (`zod/v4`), `drizzle-zod`
-- **API codegen**: Orval (from OpenAPI spec)
-- **Build**: esbuild (CJS bundle)
+## Required secrets
 
-## Key Commands
+- `LIVEKIT_URL`, `LIVEKIT_API_KEY`, `LIVEKIT_API_SECRET`
+- `VOBIZ_SIP_TRUNK_ID`
 
-- `pnpm run typecheck` — full typecheck across all packages
-- `pnpm run build` — typecheck + build all packages
-- `pnpm --filter @workspace/api-spec run codegen` — regenerate API hooks and Zod schemas from OpenAPI spec
-- `pnpm --filter @workspace/db run push` — push DB schema changes (dev only)
-- `pnpm --filter @workspace/api-server run dev` — run API server locally
+## Notes
 
-See the `pnpm-workspace` skill for workspace structure, TypeScript setup, and package details.
+- API base URL in the frontend is computed from `import.meta.env.BASE_URL` via `src/lib/api.ts`.
+- The Python LiveKit agent in `.migration-backup/` (root) is the standalone worker that joins rooms; it's not part of this dashboard port.
