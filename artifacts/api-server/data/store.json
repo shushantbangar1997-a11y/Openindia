@@ -12,5 +12,19 @@
       "updated_at": "2026-05-03T13:16:15.925Z"
     }
   ],
-  "calls": []
+  "calls": [
+    {
+      "id": "call_87248d52eb20cecb",
+      "agent_id": "agt_10d7fe4d24509d32",
+      "agent_name": "Friendly Assistant",
+      "phone_number": "(browser test)",
+      "room_name": "test-509d32-04503b",
+      "status": "ended",
+      "started_at": "2026-05-03T13:21:40.638Z",
+      "answered_at": "2026-05-03T13:21:45.207Z",
+      "ended_at": "2026-05-03T13:21:55.972Z",
+      "end_reason": "callee disconnected",
+      "transcript": []
+    }
+  ]
 }
