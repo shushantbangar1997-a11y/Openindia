@@ -56,7 +56,7 @@ Old agent records (pre-v2) auto-migrate to the new schema via `migrateAgent()` i
 
 ## Storage
 
-`artifacts/api-server/data/store.json` — single JSON file with `{ agents, calls }`. Auto-seeds a "Friendly Assistant" agent on first boot.
+`artifacts/api-server/data/store.runtime.json` (gitignored) — single JSON file with `{ agents, calls }` written at runtime; contains user-pasted provider API keys so it must never be committed. On first boot, db.ts falls back to the committed empty seed at `artifacts/api-server/data/store.seed.json` and auto-creates a "Friendly Assistant" agent.
 
 ## Required secrets
 
