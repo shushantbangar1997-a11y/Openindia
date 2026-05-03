@@ -10,8 +10,10 @@ export type Agent = {
   tts_provider: TtsProvider;
   voice_id: string;
   language: string;
+  auto_detect_language: boolean;
   speaking_speed: number;
   fillers_enabled: boolean;
+  custom_fillers: string[];
   interruption_sensitivity: "low" | "medium" | "high";
   wait_for_user_first: boolean;
   template_id: string | null;

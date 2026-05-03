@@ -18,8 +18,10 @@ export type Agent = {
   tts_provider: TtsProvider;
   voice_id: string;
   language: string;
+  auto_detect_language: boolean;
   speaking_speed: number; // 0.8 - 1.3
   fillers_enabled: boolean;
+  custom_fillers: string[]; // overrides built-in language pack when non-empty
   interruption_sensitivity: InterruptionSensitivity;
   wait_for_user_first: boolean;
   template_id: string | null;
@@ -74,8 +76,10 @@ function withDefaults(input: Partial<Agent> & { name: string }): Omit<Agent, "id
     tts_provider: input.tts_provider ?? "deepgram",
     voice_id: input.voice_id ?? DEFAULT_VOICE_ID,
     language: input.language ?? DEFAULT_LANGUAGE_ID,
+    auto_detect_language: Boolean(input.auto_detect_language),
     speaking_speed: typeof input.speaking_speed === "number" ? input.speaking_speed : 1.0,
     fillers_enabled: input.fillers_enabled ?? true,
+    custom_fillers: Array.isArray(input.custom_fillers) ? input.custom_fillers : [],
     interruption_sensitivity: input.interruption_sensitivity ?? "medium",
     wait_for_user_first: Boolean(input.wait_for_user_first),
     template_id: input.template_id ?? null,
@@ -108,8 +112,10 @@ function migrateAgent(a: any): Agent {
     tts_provider: (a.tts_provider as TtsProvider) ?? "deepgram",
     voice_id: a.voice_id ?? DEFAULT_VOICE_ID,
     language: a.language ?? DEFAULT_LANGUAGE_ID,
+    auto_detect_language: Boolean(a.auto_detect_language),
     speaking_speed: typeof a.speaking_speed === "number" ? a.speaking_speed : 1.0,
     fillers_enabled: a.fillers_enabled ?? true,
+    custom_fillers: Array.isArray(a.custom_fillers) ? a.custom_fillers : [],
     interruption_sensitivity: (a.interruption_sensitivity as InterruptionSensitivity) ?? "medium",
     wait_for_user_first: Boolean(a.wait_for_user_first),
     template_id: a.template_id ?? null,
@@ -281,7 +287,12 @@ export function buildAgentMetadata(
     .join("\n\n## Per-call context\n");
   // Resolve catalog-driven STT model/language so the worker doesn't have to
   // re-derive them — single source of truth lives in voices.ts.
+  // When auto_detect is on, force Deepgram's multi-language detection mode.
   const lang = getLanguage(agent.language);
+  const stt_model = agent.auto_detect_language ? "nova-2" : (lang?.stt_model ?? "nova-3");
+  const stt_language = agent.auto_detect_language
+    ? "multi"
+    : (lang?.stt_language ?? agent.language);
   return JSON.stringify({
     ...(extra.mode ? { mode: extra.mode } : {}),
     ...(extra.phone_number ? { phone_number: extra.phone_number } : {}),
@@ -292,10 +303,12 @@ export function buildAgentMetadata(
     tts_provider: agent.tts_provider,
     voice_id: agent.voice_id,
     language: agent.language,
-    stt_model: lang?.stt_model ?? "nova-3",
-    stt_language: lang?.stt_language ?? agent.language,
+    auto_detect_language: agent.auto_detect_language,
+    stt_model,
+    stt_language,
     speaking_speed: agent.speaking_speed,
     fillers_enabled: agent.fillers_enabled,
+    custom_fillers: agent.custom_fillers,
     interruption_sensitivity: agent.interruption_sensitivity,
     wait_for_user_first: agent.wait_for_user_first,
   });

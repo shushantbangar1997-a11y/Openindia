@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import {
   Bot,
@@ -14,9 +14,12 @@ import {
   MessageSquare,
   Settings2,
   AlertCircle,
+  Play,
+  KeyRound,
+  Copy,
 } from "lucide-react";
 import { type Agent, useAgents, useCatalog } from "@/lib/agents";
-import { apiSend } from "@/lib/api";
+import { apiSend, apiUrl } from "@/lib/api";
 import {
   DEFAULT_LANGUAGE_ID,
   DEFAULT_VOICE_ID,
@@ -36,8 +39,10 @@ const EMPTY: Draft = {
   tts_provider: "deepgram",
   voice_id: DEFAULT_VOICE_ID,
   language: DEFAULT_LANGUAGE_ID,
+  auto_detect_language: false,
   speaking_speed: 1.0,
   fillers_enabled: true,
+  custom_fillers: [],
   interruption_sensitivity: "medium",
   wait_for_user_first: false,
   template_id: null,
@@ -365,39 +370,53 @@ export default function AgentsPage() {
                   </div>
 
                   {!providerInfo?.available && (
-                    <div className="flex items-start gap-2 p-3 rounded-lg bg-amber-500/10 border border-amber-500/30 text-amber-200 text-xs">
-                      <AlertCircle className="w-4 h-4 mt-0.5 flex-shrink-0" />
-                      <div>
-                        This provider needs an API key. Add{" "}
-                        <code className="px-1 rounded bg-black/30">
-                          {draft.tts_provider === "elevenlabs"
-                            ? "ELEVENLABS_API_KEY"
-                            : "CARTESIA_API_KEY"}
-                        </code>{" "}
-                        in Replit Secrets, then restart the agent worker.
-                        Until then we'll fall back to Deepgram.
-                      </div>
-                    </div>
+                    <ApiKeyOnboarding
+                      provider={draft.tts_provider}
+                      secretName={
+                        draft.tts_provider === "elevenlabs"
+                          ? "ELEVENLABS_API_KEY"
+                          : "CARTESIA_API_KEY"
+                      }
+                      docsUrl={
+                        draft.tts_provider === "elevenlabs"
+                          ? "https://elevenlabs.io/app/settings/api-keys"
+                          : "https://play.cartesia.ai/keys"
+                      }
+                    />
                   )}
 
-                  <Field label="Voice">
-                    <select
-                      value={draft.voice_id}
-                      onChange={(e) =>
-                        setDraft({ ...draft, voice_id: e.target.value })
+                  <Field label="Auto-detect language">
+                    <ToggleRow
+                      checked={draft.auto_detect_language}
+                      onChange={(b) =>
+                        setDraft({ ...draft, auto_detect_language: b })
                       }
-                      className="w-full px-3 py-2 bg-white/5 border border-white/10 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-purple-500"
-                    >
-                      {availableVoices.length === 0 ? (
-                        <option value="">No voices for this combination</option>
-                      ) : (
-                        availableVoices.map((v) => (
-                          <option key={v.id} value={v.id}>
-                            {v.label}
-                          </option>
-                        ))
-                      )}
-                    </select>
+                      title="Detect the caller's language each turn and reply in that language"
+                      hint="Uses Deepgram's multilingual STT. Pair with ElevenLabs or Cartesia for native voice in 25+ languages."
+                    />
+                  </Field>
+
+                  <Field label="Voice">
+                    <div className="flex gap-2">
+                      <select
+                        value={draft.voice_id}
+                        onChange={(e) =>
+                          setDraft({ ...draft, voice_id: e.target.value })
+                        }
+                        className="flex-1 px-3 py-2 bg-white/5 border border-white/10 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-purple-500"
+                      >
+                        {availableVoices.length === 0 ? (
+                          <option value="">No voices for this combination</option>
+                        ) : (
+                          availableVoices.map((v) => (
+                            <option key={v.id} value={v.id}>
+                              {v.label}
+                            </option>
+                          ))
+                        )}
+                      </select>
+                      <VoicePreviewButton voiceId={draft.voice_id} />
+                    </div>
                     {draft.tts_provider === "deepgram" &&
                       !draft.language.startsWith("en") && (
                         <p className="text-[11px] text-amber-400 mt-1">
@@ -448,9 +467,33 @@ export default function AgentsPage() {
                         setDraft({ ...draft, fillers_enabled: b })
                       }
                       title="Use fillers like 'mm-hmm' and 'okay' while thinking"
-                      hint="Eliminates dead air while the language model is generating a reply. Sounds dramatically more human."
+                      hint="Played 250ms after the caller stops talking and cancelled if the real reply arrives first — eliminates dead air without overlapping."
                     />
                   </Field>
+
+                  {draft.fillers_enabled && (
+                    <Field label="Custom fillers (one per line, optional)">
+                      <textarea
+                        value={draft.custom_fillers.join("\n")}
+                        onChange={(e) =>
+                          setDraft({
+                            ...draft,
+                            custom_fillers: e.target.value
+                              .split("\n")
+                              .map((s) => s.trim())
+                              .filter((s) => s.length > 0),
+                          })
+                        }
+                        rows={4}
+                        placeholder={"mm-hmm,\nokay,\nlet me see,\nright,"}
+                        className="w-full px-3 py-2 bg-white/5 border border-white/10 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-purple-500 resize-y font-mono"
+                      />
+                      <p className="text-[11px] text-gray-500 mt-1">
+                        Leave empty to use the built-in pack for the agent's
+                        language.
+                      </p>
+                    </Field>
+                  )}
 
                   <Field label="Interruption sensitivity">
                     <div className="grid grid-cols-3 gap-2">
@@ -576,6 +619,113 @@ function TabBtn({
       {icon}
       {label}
     </button>
+  );
+}
+
+function VoicePreviewButton({ voiceId }: { voiceId: string }) {
+  const [loading, setLoading] = useState(false);
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+  const onPlay = async () => {
+    setLoading(true);
+    try {
+      audioRef.current?.pause();
+      const r = await fetch(apiUrl("/agents/sample-voice"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ voice_id: voiceId }),
+      });
+      if (!r.ok) throw new Error(await r.text());
+      const blob = await r.blob();
+      const url = URL.createObjectURL(blob);
+      const a = new Audio(url);
+      audioRef.current = a;
+      a.onended = () => URL.revokeObjectURL(url);
+      await a.play();
+    } catch (e) {
+      console.error("voice sample failed", e);
+    } finally {
+      setLoading(false);
+    }
+  };
+  return (
+    <button
+      type="button"
+      onClick={onPlay}
+      disabled={loading || !voiceId}
+      className="px-3 py-2 rounded-lg bg-white/5 border border-white/10 text-sm text-gray-200 hover:bg-white/10 disabled:opacity-50 flex items-center gap-1.5"
+      aria-label="Preview voice"
+    >
+      {loading ? (
+        <Loader2 className="w-4 h-4 animate-spin" />
+      ) : (
+        <Play className="w-4 h-4" />
+      )}
+      Sample
+    </button>
+  );
+}
+
+function ApiKeyOnboarding({
+  provider,
+  secretName,
+  docsUrl,
+}: {
+  provider: string;
+  secretName: string;
+  docsUrl: string;
+}) {
+  const [copied, setCopied] = useState(false);
+  const onCopy = async () => {
+    try {
+      await navigator.clipboard.writeText(secretName);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch {}
+  };
+  return (
+    <div className="p-3 rounded-lg bg-amber-500/10 border border-amber-500/30 text-amber-100 text-xs space-y-2">
+      <div className="flex items-start gap-2">
+        <AlertCircle className="w-4 h-4 mt-0.5 flex-shrink-0" />
+        <div>
+          <b className="capitalize">{provider}</b> needs an API key. Until
+          you add one, calls will use Deepgram's free voices.
+        </div>
+      </div>
+      <ol className="ml-6 list-decimal space-y-0.5 text-amber-200/90">
+        <li>
+          Get a key at{" "}
+          <a
+            href={docsUrl}
+            target="_blank"
+            rel="noreferrer"
+            className="underline hover:text-amber-50"
+          >
+            {provider === "elevenlabs" ? "elevenlabs.io" : "play.cartesia.ai"}
+          </a>
+          .
+        </li>
+        <li>Open the Secrets pane in Replit and add the key.</li>
+        <li>Restart the "Rapid X Agent" workflow.</li>
+      </ol>
+      <div className="flex items-center gap-2 pt-1">
+        <code className="px-2 py-1 rounded bg-black/40 text-amber-100">
+          {secretName}
+        </code>
+        <button
+          type="button"
+          onClick={onCopy}
+          className="p-1.5 rounded bg-black/30 hover:bg-black/50 text-amber-100"
+          aria-label="Copy secret name"
+        >
+          {copied ? (
+            <CheckCircle className="w-3.5 h-3.5" />
+          ) : (
+            <Copy className="w-3.5 h-3.5" />
+          )}
+        </button>
+        <KeyRound className="w-3.5 h-3.5 ml-auto opacity-60" />
+      </div>
+    </div>
   );
 }
 

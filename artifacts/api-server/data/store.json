@@ -8,13 +8,19 @@
       "tts_provider": "deepgram",
       "voice_id": "aura-2-thalia-en",
       "language": "en-US",
+      "auto_detect_language": true,
       "speaking_speed": 1,
       "fillers_enabled": true,
+      "custom_fillers": [
+        "uh huh,",
+        "for sure,",
+        "let me check,"
+      ],
       "interruption_sensitivity": "high",
       "wait_for_user_first": false,
       "template_id": "appointment-booking",
       "created_at": "2026-05-03T13:16:15.925Z",
-      "updated_at": "2026-05-03T13:48:45.089Z"
+      "updated_at": "2026-05-03T14:01:40.367Z"
     }
   ],
   "calls": [

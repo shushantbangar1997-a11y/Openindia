@@ -12,14 +12,17 @@ Synthflow-style outbound voice agent platform. Build agents that sound like real
   - `GET/POST/PATCH/DELETE /agents[/:id]` — agent CRUD (JSON-file store, server-side sanitization on writes).
   - `GET /agents/catalog` — single source of truth for the frontend: voices, languages (with the Deepgram STT model/language for each), prompt templates, and provider availability flags (driven by which API keys are present in env).
   - `POST /agents/:id/test-token` — mints a LiveKit AccessToken so the browser can join an isolated test room with the agent's metadata baked in.
+  - `POST /agents/sample-voice` — short Deepgram TTS proxy that powers the in-editor "Sample" button next to each voice. Voice IDs are regex-validated; response is `audio/mpeg` with a 1h cache header.
   - `POST /dispatch`, `POST /queue` — dial via the Vobiz SIP trunk; both call `buildAgentMetadata()` which embeds the agent's full config (provider, voice, language, STT model, speed, fillers, sensitivity, prompt, greeting) into the LiveKit room metadata.
   - `GET /calls`, `GET /calls/:id` — call history + transcript.
   - `POST /calls/by-room/:room/events|transcript` — internal callbacks the agent worker uses to record `answered/ended/failed` and conversation turns.
 - **`services/rapid-x-agent`** — Python LiveKit worker. Waits for the callee to join before starting `AgentSession`, then:
   - Picks a TTS provider (Deepgram Aura / Aura-2, ElevenLabs Multilingual v2, or Cartesia Sonic-2). Premium providers gracefully fall back to Deepgram if the plugin or API key is missing.
-  - Picks a Deepgram STT model from the room metadata (catalog-driven; no client-side guessing).
+  - Picks a Deepgram STT model from the room metadata (catalog-driven; no client-side guessing). When `auto_detect_language` is on, forces nova-2 + `language=multi` for code-switching support.
   - Maps interruption sensitivity (low/medium/high) to `min_endpointing_delay` of 600/350/180 ms on `AgentSession`.
-  - Plays a short conversational filler (`mm-hmm`, `right`, `okay` — localized into 11 languages) on `user_input_transcribed` final, eliminating dead air while the LLM generates.
+  - Plays a short conversational filler (built-in pack in 11 languages OR the agent's custom list) **250 ms** after the caller stops speaking, and **cancels** the pending filler if the real reply or new user speech arrives first — eliminates dead air without overlap.
+  - Listens for `user_started_speaking` and explicitly calls `session.interrupt()` so barge-in is instantaneous (in addition to VAD-based `allow_interruptions`).
+  - Subscribes to `metrics_collected` and publishes per-event timings (STT EOU, LLM TTFT, TTS TTFB, durations) on LiveKit data channel topic `"latency"` — drives the live latency HUD in the browser test modal.
   - Speaks the literal opening line via `session.say()` so the user gets exactly the greeting they wrote (instead of an LLM paraphrase).
   - Streams transcript turns + lifecycle events back to the api-server via `INTERNAL_API_URL` (default `http://localhost:8080`).
 - **`artifacts/rapid-x-promo`** — Animated promo video (video-js).
@@ -36,6 +39,8 @@ Each agent (`artifacts/api-server/src/lib/db.ts → Agent`):
 - `interruption_sensitivity`: `"low" | "medium" | "high"`
 - `wait_for_user_first`: bool
 - `template_id`: which prompt scaffold was chosen (for UI hint only)
+- `auto_detect_language`: bool — when on, forces multilingual STT and tells the LLM to mirror the caller's language each turn
+- `custom_fillers`: string[] — overrides the built-in language pack when non-empty (max 20, each <60 chars; sanitized server-side)
 
 Old agent records (pre-v2) auto-migrate to the new schema via `migrateAgent()` in `db.ts`.
 

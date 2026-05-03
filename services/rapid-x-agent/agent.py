@@ -202,7 +202,9 @@ async def _wait_for_callee(
             pass
 
 
-def _build_persona(user_prompt: str, language: str, speaking_speed: float) -> str:
+def _build_persona(
+    user_prompt: str, language: str, speaking_speed: float, auto_detect: bool
+) -> str:
     """Stitch a small, opinionated language/style header onto the user prompt
     so the LLM consistently sounds human and stays in the right language."""
     lang_label = language or "en-US"
@@ -211,11 +213,20 @@ def _build_persona(user_prompt: str, language: str, speaking_speed: float) -> st
         pace = "a slightly quick pace"
     elif speaking_speed <= 0.9:
         pace = "a slightly slower pace"
+    if auto_detect:
+        lang_rule = (
+            f"- Detect the caller's spoken language on each turn and reply in "
+            f"that exact language. Default to {lang_label} only if you can't tell."
+        )
+    else:
+        lang_rule = (
+            f"- Always reply in language: {lang_label}. If the caller switches "
+            f"language mid-call, follow them."
+        )
     header = (
         f"# Conversation rules\n"
         f"- This is a live phone call. Speak naturally at {pace}.\n"
-        f"- Always reply in language: {lang_label}. If the caller switches "
-        f"language mid-call, follow them.\n"
+        f"{lang_rule}\n"
         f"- Use contractions and casual phrasing. Keep replies short "
         f"(usually one or two sentences).\n"
         f"- Never reveal that you are an AI, model, or bot. If asked, say "
@@ -225,6 +236,14 @@ def _build_persona(user_prompt: str, language: str, speaking_speed: float) -> st
     )
     body = (user_prompt or DEFAULT_SYSTEM_PROMPT).strip()
     return f"{header}\n# Your role\n{body}"
+
+
+async def _publish_latency(room: rtc.Room, payload: dict) -> None:
+    try:
+        data = json.dumps(payload).encode("utf-8")
+        await room.local_participant.publish_data(data, reliable=True, topic="latency")
+    except Exception as e:
+        logger.debug(f"publish_data failed: {e}")
 
 
 class OutboundAssistant(Agent):
@@ -248,15 +267,17 @@ async def entrypoint(ctx: agents.JobContext):
     tts_provider = (cfg.get("tts_provider") or "deepgram").strip().lower()
     voice_id = (cfg.get("voice_id") or "aura-2-thalia-en").strip()
     language = (cfg.get("language") or "en-US").strip()
+    auto_detect = bool(cfg.get("auto_detect_language"))
     stt_model = (cfg.get("stt_model") or "").strip()
     stt_language = (cfg.get("stt_language") or "").strip()
     speaking_speed = float(cfg.get("speaking_speed") or 1.0)
     fillers_enabled = bool(cfg.get("fillers_enabled", True))
+    custom_fillers = [str(s).strip() for s in (cfg.get("custom_fillers") or []) if str(s).strip()]
     sensitivity = (cfg.get("interruption_sensitivity") or "medium").strip().lower()
     wait_for_user_first = bool(cfg.get("wait_for_user_first"))
     mode = (cfg.get("mode") or "").strip()
 
-    instructions = _build_persona(user_prompt, language, speaking_speed)
+    instructions = _build_persona(user_prompt, language, speaking_speed, auto_detect)
     endpointing = ENDPOINTING_MS.get(sensitivity, ENDPOINTING_MS["medium"])
 
     logger.info(
@@ -312,29 +333,75 @@ async def entrypoint(ctx: agents.JobContext):
         except Exception as e:
             logger.debug(f"transcript hook failed: {e}")
 
-    # Filler engine: when the user finishes speaking, drop a short conversational
-    # acknowledgement before the LLM reply lands. Eliminates the awkward dead-air
-    # gap while the LLM is generating.
+    # Filler engine: when the user finishes speaking, schedule a short
+    # acknowledgement after a 250ms gate. If the LLM/TTS starts producing
+    # audio first, we cancel the filler so it never overlaps the real reply.
+    pending_filler: dict[str, Optional[asyncio.Task]] = {"task": None}
+
+    def _cancel_pending_filler() -> None:
+        t = pending_filler.get("task")
+        if t and not t.done():
+            t.cancel()
+        pending_filler["task"] = None
+
     if fillers_enabled:
         @session.on("user_input_transcribed")
         def _on_user_done(ev) -> None:
             try:
-                # Only react to FINAL transcripts, not interim ones.
                 if not getattr(ev, "is_final", False):
                     return
                 text = (getattr(ev, "transcript", "") or "").strip()
                 if len(text) < 3:
                     return
-                phrase = _filler_for(language)
-                # Don't add the filler to the LLM chat context — it's audio fluff.
-                async def _say():
+                if custom_fillers:
+                    phrase = random.choice(custom_fillers)
+                else:
+                    phrase = _filler_for(language)
+
+                async def _delayed_filler():
                     try:
+                        await asyncio.sleep(0.25)
                         await session.say(phrase, add_to_chat_ctx=False, allow_interruptions=True)
+                    except asyncio.CancelledError:
+                        pass
                     except Exception as e:
                         logger.debug(f"filler say failed: {e}")
-                asyncio.create_task(_say())
+                _cancel_pending_filler()
+                pending_filler["task"] = asyncio.create_task(_delayed_filler())
             except Exception as e:
                 logger.debug(f"filler hook failed: {e}")
+
+    # Explicit barge-in: the moment the user starts speaking, stop the agent
+    # immediately. AgentSession also handles this internally via VAD when
+    # allow_interruptions=True, but calling .interrupt() guarantees instant cut.
+    @session.on("user_started_speaking")
+    def _on_user_speak(_ev=None) -> None:
+        _cancel_pending_filler()
+        try:
+            res = session.interrupt()
+            if asyncio.iscoroutine(res):
+                asyncio.create_task(res)
+        except Exception as e:
+            logger.debug(f"interrupt failed: {e}")
+
+    # Latency HUD: push STT/LLM/TTS timing events down a LiveKit data
+    # channel (topic="latency") so the browser test modal can render a HUD.
+    @session.on("metrics_collected")
+    def _on_metrics(ev) -> None:
+        try:
+            m = getattr(ev, "metrics", None)
+            if m is None:
+                return
+            # Each metric class has different fields; we extract what we can.
+            kind = type(m).__name__
+            payload: dict = {"kind": kind}
+            for attr in ("ttft", "ttfb", "duration", "audio_duration", "end_of_utterance_delay"):
+                val = getattr(m, attr, None)
+                if isinstance(val, (int, float)):
+                    payload[attr] = round(float(val) * 1000.0, 1)  # ms
+            asyncio.create_task(_publish_latency(ctx.room, payload))
+        except Exception as e:
+            logger.debug(f"metrics hook failed: {e}")
 
     await session.start(
         room=ctx.room,
