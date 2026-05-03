@@ -415,7 +415,11 @@ export default function AgentsPage() {
                           ))
                         )}
                       </select>
-                      <VoicePreviewButton voiceId={draft.voice_id} />
+                      <VoicePreviewButton
+                        voiceId={draft.voice_id}
+                        provider={draft.tts_provider}
+                        language={draft.language}
+                      />
                     </div>
                     {draft.tts_provider === "deepgram" &&
                       !draft.language.startsWith("en") && (
@@ -622,7 +626,15 @@ function TabBtn({
   );
 }
 
-function VoicePreviewButton({ voiceId }: { voiceId: string }) {
+function VoicePreviewButton({
+  voiceId,
+  provider,
+  language,
+}: {
+  voiceId: string;
+  provider: string;
+  language: string;
+}) {
   const [loading, setLoading] = useState(false);
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const onPlay = async () => {
@@ -632,7 +644,7 @@ function VoicePreviewButton({ voiceId }: { voiceId: string }) {
       const r = await fetch(apiUrl("/agents/sample-voice"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ voice_id: voiceId }),
+        body: JSON.stringify({ voice_id: voiceId, provider, language }),
       });
       if (!r.ok) throw new Error(await r.text());
       const blob = await r.blob();

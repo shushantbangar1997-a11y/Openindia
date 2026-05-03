@@ -43,6 +43,22 @@ export const LANGUAGES: Language[] = [
   { id: "ar", label: "Arabic", stt_model: "nova-2", stt_language: "multi" },
   { id: "id", label: "Indonesian", stt_model: "nova-2", stt_language: "id" },
   { id: "vi", label: "Vietnamese", stt_model: "nova-2", stt_language: "vi" },
+  { id: "ta", label: "Tamil", stt_model: "nova-2", stt_language: "multi" },
+  { id: "te", label: "Telugu", stt_model: "nova-2", stt_language: "multi" },
+  { id: "bn", label: "Bengali", stt_model: "nova-2", stt_language: "multi" },
+  { id: "mr", label: "Marathi", stt_model: "nova-2", stt_language: "multi" },
+  { id: "gu", label: "Gujarati", stt_model: "nova-2", stt_language: "multi" },
+  { id: "pa", label: "Punjabi", stt_model: "nova-2", stt_language: "multi" },
+  { id: "ml", label: "Malayalam", stt_model: "nova-2", stt_language: "multi" },
+  { id: "kn", label: "Kannada", stt_model: "nova-2", stt_language: "multi" },
+  { id: "ur", label: "Urdu", stt_model: "nova-2", stt_language: "multi" },
+  { id: "sv", label: "Swedish", stt_model: "nova-2", stt_language: "sv" },
+  { id: "no", label: "Norwegian", stt_model: "nova-2", stt_language: "no" },
+  { id: "da", label: "Danish", stt_model: "nova-2", stt_language: "da" },
+  { id: "fi", label: "Finnish", stt_model: "nova-2", stt_language: "fi" },
+  { id: "el", label: "Greek", stt_model: "nova-2", stt_language: "el" },
+  { id: "he", label: "Hebrew", stt_model: "nova-2", stt_language: "multi" },
+  { id: "th", label: "Thai", stt_model: "nova-2", stt_language: "multi" },
 ];
 
 // Curated voice catalog. Deepgram = free (uses your existing key).

@@ -337,12 +337,58 @@ async def entrypoint(ctx: agents.JobContext):
     # acknowledgement after a 250ms gate. If the LLM/TTS starts producing
     # audio first, we cancel the filler so it never overlaps the real reply.
     pending_filler: dict[str, Optional[asyncio.Task]] = {"task": None}
+    current_lang: dict[str, str] = {"lang": (language or "en-US").split("-")[0].lower()}
 
     def _cancel_pending_filler() -> None:
         t = pending_filler.get("task")
         if t and not t.done():
             t.cancel()
         pending_filler["task"] = None
+
+    # Cancel pending filler the moment the assistant starts producing audio
+    # so the filler never overlaps or queues behind the real reply.
+    @session.on("agent_state_changed")
+    def _on_agent_state(ev) -> None:
+        try:
+            new_state = getattr(ev, "new_state", None) or getattr(ev, "state", None)
+            if new_state == "speaking":
+                _cancel_pending_filler()
+        except Exception as e:
+            logger.debug(f"agent_state hook failed: {e}")
+
+    # Per-utterance language routing: when auto-detect is on and the caller
+    # switches language mid-call, swap the TTS to a matching voice for that
+    # language so the agent replies in the right voice (not just the right
+    # words). Only acts on Cartesia (which is per-language); ElevenLabs
+    # multilingual handles language internally; Deepgram Aura is EN-only.
+    def _maybe_swap_tts(detected_lang: Optional[str]) -> None:
+        if not auto_detect or not detected_lang:
+            return
+        base = str(detected_lang).split("-")[0].lower()
+        if not base or base == current_lang["lang"]:
+            return
+        try:
+            new_tts = build_tts(tts_provider, voice_id, base, speaking_speed)
+            try:
+                session.tts = new_tts  # type: ignore[attr-defined]
+            except Exception:
+                # Some versions expose this through _tts; best-effort.
+                setattr(session, "_tts", new_tts)
+            current_lang["lang"] = base
+            logger.info(f"Swapped TTS to language={base}")
+        except Exception as e:
+            logger.debug(f"tts swap failed for {base}: {e}")
+
+    # Always-on hook for auto-detect language routing (separate from filler)
+    @session.on("user_input_transcribed")
+    def _on_user_lang(ev) -> None:
+        try:
+            if not getattr(ev, "is_final", False):
+                return
+            detected = getattr(ev, "language", None) or getattr(ev, "detected_language", None)
+            _maybe_swap_tts(detected)
+        except Exception as e:
+            logger.debug(f"lang detect hook failed: {e}")
 
     if fillers_enabled:
         @session.on("user_input_transcribed")

@@ -62,31 +62,98 @@ function sanitize(body: any): any {
   return out;
 }
 
-// Voice preview — proxies a short Deepgram TTS sample so the user can hear
-// the voice without leaving the agent editor. Uses Deepgram regardless of
-// the agent's configured provider so it works even without premium keys.
+// Voice preview — provider-aware. Routes to ElevenLabs / Cartesia / Deepgram
+// based on the requested provider, so what the user hears in the editor is
+// the actual voice their calls will use. Falls back to Deepgram if the
+// premium provider's key is missing.
+const SAMPLE_TEXT_DEFAULT =
+  "Hi there — this is a quick voice sample. I can sound like this on every call.";
+
+async function dgSample(voiceId: string, text: string): Promise<Buffer | null> {
+  const key = process.env["DEEPGRAM_API_KEY"];
+  if (!key) return null;
+  const v = /^aura(-2)?-[a-z]+-en$/.test(voiceId) ? voiceId : "aura-2-thalia-en";
+  const r = await fetch(`https://api.deepgram.com/v1/speak?model=${encodeURIComponent(v)}`, {
+    method: "POST",
+    headers: { "Authorization": `Token ${key}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ text }),
+  });
+  if (!r.ok) return null;
+  return Buffer.from(await r.arrayBuffer());
+}
+
+async function elevenSample(voiceId: string, text: string): Promise<Buffer | null> {
+  const key = process.env["ELEVENLABS_API_KEY"];
+  if (!key) return null;
+  // Only allow alphanumeric voice IDs.
+  if (!/^[A-Za-z0-9]{15,40}$/.test(voiceId)) return null;
+  const r = await fetch(
+    `https://api.elevenlabs.io/v1/text-to-speech/${encodeURIComponent(voiceId)}?output_format=mp3_44100_128`,
+    {
+      method: "POST",
+      headers: { "xi-api-key": key, "Content-Type": "application/json", Accept: "audio/mpeg" },
+      body: JSON.stringify({ text, model_id: "eleven_multilingual_v2" }),
+    },
+  );
+  if (!r.ok) return null;
+  return Buffer.from(await r.arrayBuffer());
+}
+
+async function cartesiaSample(voiceId: string, text: string, language: string): Promise<Buffer | null> {
+  const key = process.env["CARTESIA_API_KEY"];
+  if (!key) return null;
+  // UUID-ish voice id.
+  if (!/^[a-f0-9-]{20,40}$/i.test(voiceId)) return null;
+  const lang = (language || "en").split("-")[0].toLowerCase();
+  const r = await fetch("https://api.cartesia.ai/tts/bytes", {
+    method: "POST",
+    headers: {
+      "X-API-Key": key,
+      "Cartesia-Version": "2024-06-10",
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      model_id: "sonic-2",
+      transcript: text,
+      voice: { mode: "id", id: voiceId },
+      output_format: { container: "mp3", encoding: "mp3", sample_rate: 44100 },
+      language: lang,
+    }),
+  });
+  if (!r.ok) return null;
+  return Buffer.from(await r.arrayBuffer());
+}
+
 const sampleVoice: RequestHandler = async (req, res) => {
-  const { voice_id, text } = (req.body ?? {}) as { voice_id?: string; text?: string };
-  const apiKey = process.env["DEEPGRAM_API_KEY"];
-  if (!apiKey) {
-    res.status(500).json({ error: "DEEPGRAM_API_KEY not configured" });
+  const { voice_id, text, provider, language } = (req.body ?? {}) as {
+    voice_id?: string;
+    text?: string;
+    provider?: string;
+    language?: string;
+  };
+  const sampleText = (text || SAMPLE_TEXT_DEFAULT).slice(0, 200);
+  if (!voice_id) {
+    res.status(400).json({ error: "voice_id required" });
     return;
   }
-  // Only allow Deepgram-style voice IDs to keep this proxy safe.
-  const dgVoice =
-    voice_id && /^aura(-2)?-[a-z]+-en$/.test(voice_id) ? voice_id : "aura-2-thalia-en";
-  const sampleText = (text || "Hi there — this is a quick voice sample. I can sound like this on every call.").slice(0, 200);
+  let buf: Buffer | null = null;
   try {
-    const r = await fetch(`https://api.deepgram.com/v1/speak?model=${encodeURIComponent(dgVoice)}`, {
-      method: "POST",
-      headers: { "Authorization": `Token ${apiKey}`, "Content-Type": "application/json" },
-      body: JSON.stringify({ text: sampleText }),
-    });
-    if (!r.ok) {
-      res.status(502).json({ error: `Deepgram returned ${r.status}` });
+    if (provider === "elevenlabs") {
+      buf = await elevenSample(voice_id, sampleText);
+    } else if (provider === "cartesia") {
+      buf = await cartesiaSample(voice_id, sampleText, language || "en");
+    } else {
+      buf = await dgSample(voice_id, sampleText);
+    }
+    // Fallback to Deepgram so the user always hears *something* when the
+    // premium key isn't configured (with a default English voice).
+    if (!buf) {
+      buf = await dgSample("aura-2-thalia-en", sampleText);
+    }
+    if (!buf) {
+      res.status(500).json({ error: "Could not generate sample" });
       return;
     }
-    const buf = Buffer.from(await r.arrayBuffer());
     res.set("Content-Type", "audio/mpeg");
     res.set("Cache-Control", "public, max-age=3600");
     res.send(buf);
