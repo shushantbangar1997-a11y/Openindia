@@ -1,0 +1,16 @@
+{
+  "agents": [
+    {
+      "id": "agt_10d7fe4d24509d32",
+      "name": "Friendly Assistant",
+      "system_prompt": "You are a friendly, concise AI voice assistant calling on behalf of Rapid X AI. Keep replies short (1-2 sentences). Politely confirm if the caller can hear you when they're silent. End the call warmly when they say goodbye.",
+      "greeting": "Hi! Thanks for picking up — I'm an AI assistant calling from Rapid X. How are you doing today?",
+      "voice_id": "aura-asteria-en",
+      "language": "en",
+      "wait_for_user_first": false,
+      "created_at": "2026-05-03T13:16:15.925Z",
+      "updated_at": "2026-05-03T13:16:15.925Z"
+    }
+  ],
+  "calls": []
+}
