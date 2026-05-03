@@ -1,0 +1,14 @@
+uploads = []
+outputs = []
+
+[[generated]]
+id = "52Kt1kNphDf6LGlw4heI1"
+uri = "file://artifacts/rapid-x-promo/public/images/bg-gradient.png"
+type = "image"
+title = "Abstract dark gradient mesh"
+
+[[generated]]
+id = "F191gVEE2La29ryKzuG9i"
+uri = "file://artifacts/rapid-x-promo/public/images/network.png"
+type = "image"
+title = "Global data network nodes"

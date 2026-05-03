@@ -1,0 +1,31 @@
+kind = "video"
+previewPath = "/rapid-x-promo/"
+title = "Rapid X Promo Video"
+version = "1.0.0"
+id = "artifacts/rapid-x-promo"
+router = "path"
+
+[[integratedSkills]]
+name = "video-js"
+version = "1.0.0"
+
+[[services]]
+name = "web"
+paths = [ "/rapid-x-promo/" ]
+localPort = 22895
+
+[services.development]
+run = "pnpm --filter @workspace/rapid-x-promo run dev"
+
+[services.production]
+build = [ "pnpm", "--filter", "@workspace/rapid-x-promo", "run", "build" ]
+publicDir = "artifacts/rapid-x-promo/dist/public"
+serve = "static"
+
+[[services.production.rewrites]]
+from = "/*"
+to = "/index.html"
+
+[services.env]
+PORT = "22895"
+BASE_PATH = "/rapid-x-promo/"
