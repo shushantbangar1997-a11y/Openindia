@@ -17,6 +17,7 @@ import json
 import logging
 import os
 import urllib.error
+import urllib.parse
 import urllib.request
 from typing import Optional
 
@@ -55,7 +56,7 @@ def _render_elevenlabs(phrase: str, voice_id: str, api_key: str, sample_rate: in
     fmt = f"pcm_{sample_rate}"
     url = (
         f"https://api.elevenlabs.io/v1/text-to-speech/"
-        f"{urllib.request.quote(voice_id, safe='')}?output_format={fmt}"
+        f"{urllib.parse.quote(voice_id, safe='')}?output_format={fmt}"
     )
     body = json.dumps({"text": phrase, "model_id": "eleven_multilingual_v2"}).encode("utf-8")
     headers = {"xi-api-key": api_key, "Content-Type": "application/json", "Accept": "audio/pcm"}
@@ -142,20 +143,33 @@ class FillerCache:
         return list(self._cache.keys())
 
     def _render_one(self, phrase: str) -> Optional[bytes]:
-        # Pick the first provider that we have a key for, in preference order.
-        if self.provider == "elevenlabs" and self.eleven_key:
-            return _render_elevenlabs(phrase, self.voice_id, self.eleven_key, self.sample_rate)
-        if self.provider == "cartesia" and self.cartesia_key:
-            return _render_cartesia(
-                phrase, self.voice_id, self.language, self.cartesia_key, self.sample_rate
-            )
-        # Deepgram fallback (or default). Aura voices only — strip non-Aura ids.
+        # Try the agent's selected provider first; cascade to Deepgram on any
+        # failure so the cache is NEVER empty (no dead air).
+        try:
+            if self.provider == "elevenlabs" and self.eleven_key:
+                pcm = _render_elevenlabs(
+                    phrase, self.voice_id, self.eleven_key, self.sample_rate
+                )
+                if pcm:
+                    return pcm
+            elif self.provider == "cartesia" and self.cartesia_key:
+                pcm = _render_cartesia(
+                    phrase, self.voice_id, self.language, self.cartesia_key, self.sample_rate
+                )
+                if pcm:
+                    return pcm
+        except Exception as e:
+            logger.warning(f"Premium filler render failed, falling back to Deepgram: {e}")
         dg_voice = (
             self.voice_id
             if self.voice_id and self.voice_id.startswith("aura")
             else "aura-2-thalia-en"
         )
-        return _render_deepgram(phrase, dg_voice, self.sample_rate)
+        try:
+            return _render_deepgram(phrase, dg_voice, self.sample_rate)
+        except Exception as e:
+            logger.warning(f"Deepgram filler render failed: {e}")
+            return None
 
     async def initialize(self) -> None:
         if not self.phrases:

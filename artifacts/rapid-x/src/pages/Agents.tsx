@@ -436,6 +436,7 @@ export default function AgentsPage() {
                         voiceId={draft.voice_id}
                         provider={draft.tts_provider}
                         language={draft.language}
+                        agentId={selectedId}
                       />
                     </div>
                     {draft.tts_provider === "deepgram" &&
@@ -647,10 +648,12 @@ function VoicePreviewButton({
   voiceId,
   provider,
   language,
+  agentId,
 }: {
   voiceId: string;
   provider: string;
   language: string;
+  agentId: string | null;
 }) {
   const [loading, setLoading] = useState(false);
   const audioRef = useRef<HTMLAudioElement | null>(null);
@@ -658,10 +661,17 @@ function VoicePreviewButton({
     setLoading(true);
     try {
       audioRef.current?.pause();
+      // Pass agent_id so the backend can use the agent's pasted premium key
+      // (instead of falling back to the global env-var Deepgram voice).
       const r = await fetch(apiUrl("/agents/sample-voice"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ voice_id: voiceId, provider, language }),
+        body: JSON.stringify({
+          voice_id: voiceId,
+          provider,
+          language,
+          ...(agentId ? { agent_id: agentId } : {}),
+        }),
       });
       if (!r.ok) throw new Error(await r.text());
       const blob = await r.blob();

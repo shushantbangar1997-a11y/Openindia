@@ -317,8 +317,22 @@ async def entrypoint(ctx: agents.JobContext):
     agent_id = (cfg.get("agent_id") or "").strip()
     if agent_id:
         try:
+            # Shared secret, written by the api-server on startup. Required
+            # in addition to the loopback check on the internal endpoint.
+            internal_token = os.getenv("INTERNAL_API_TOKEN", "")
+            if not internal_token:
+                try:
+                    import tempfile
+                    token_path = os.path.join(tempfile.gettempdir(), "rapid-x", "internal_token")
+                    with open(token_path, "r") as f:
+                        internal_token = f.read().strip()
+                except Exception:
+                    pass
             keys_url = f"{INTERNAL_API_URL}/api/internal/agents/{agent_id}/keys"
-            with urllib.request.urlopen(keys_url, timeout=2) as r:
+            req = urllib.request.Request(
+                keys_url, headers={"x-internal-token": internal_token}
+            )
+            with urllib.request.urlopen(req, timeout=2) as r:
                 keys_blob = json.loads(r.read()).get("provider_api_keys") or {}
                 eleven_key = (keys_blob.get("elevenlabs") or "").strip()
                 cartesia_key = (keys_blob.get("cartesia") or "").strip()

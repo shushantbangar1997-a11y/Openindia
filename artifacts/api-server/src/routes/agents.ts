@@ -114,8 +114,8 @@ async function dgSample(voiceId: string, text: string): Promise<Buffer | null> {
   return Buffer.from(await r.arrayBuffer());
 }
 
-async function elevenSample(voiceId: string, text: string): Promise<Buffer | null> {
-  const key = process.env["ELEVENLABS_API_KEY"];
+async function elevenSample(voiceId: string, text: string, overrideKey?: string): Promise<Buffer | null> {
+  const key = overrideKey || process.env["ELEVENLABS_API_KEY"];
   if (!key) return null;
   // Only allow alphanumeric voice IDs.
   if (!/^[A-Za-z0-9]{15,40}$/.test(voiceId)) return null;
@@ -131,8 +131,8 @@ async function elevenSample(voiceId: string, text: string): Promise<Buffer | nul
   return Buffer.from(await r.arrayBuffer());
 }
 
-async function cartesiaSample(voiceId: string, text: string, language: string): Promise<Buffer | null> {
-  const key = process.env["CARTESIA_API_KEY"];
+async function cartesiaSample(voiceId: string, text: string, language: string, overrideKey?: string): Promise<Buffer | null> {
+  const key = overrideKey || process.env["CARTESIA_API_KEY"];
   if (!key) return null;
   // UUID-ish voice id.
   if (!/^[a-f0-9-]{20,40}$/i.test(voiceId)) return null;
@@ -157,23 +157,33 @@ async function cartesiaSample(voiceId: string, text: string, language: string): 
 }
 
 const sampleVoice: RequestHandler = async (req, res) => {
-  const { voice_id, text, provider, language } = (req.body ?? {}) as {
+  const { voice_id, text, provider, language, agent_id } = (req.body ?? {}) as {
     voice_id?: string;
     text?: string;
     provider?: string;
     language?: string;
+    agent_id?: string;
   };
   const sampleText = (text || SAMPLE_TEXT_DEFAULT).slice(0, 200);
   if (!voice_id) {
     res.status(400).json({ error: "voice_id required" });
     return;
   }
+  // Per-agent stored keys take precedence over global env vars so previews
+  // reflect the *exact* provider/voice the user just pasted a key for.
+  let elevenOverride: string | undefined;
+  let cartesiaOverride: string | undefined;
+  if (agent_id) {
+    const a = await getAgent(String(agent_id));
+    elevenOverride = a?.provider_api_keys?.elevenlabs;
+    cartesiaOverride = a?.provider_api_keys?.cartesia;
+  }
   let buf: Buffer | null = null;
   try {
     if (provider === "elevenlabs") {
-      buf = await elevenSample(voice_id, sampleText);
+      buf = await elevenSample(voice_id, sampleText, elevenOverride);
     } else if (provider === "cartesia") {
-      buf = await cartesiaSample(voice_id, sampleText, language || "en");
+      buf = await cartesiaSample(voice_id, sampleText, language || "en", cartesiaOverride);
     } else {
       buf = await dgSample(voice_id, sampleText);
     }
@@ -244,14 +254,34 @@ router.patch("/agents/:id", patch);
 router.post("/agents/:id/provider-key", setProviderKey);
 router.delete("/agents/:id", remove);
 
-// Internal-only: returns unredacted provider API keys for an agent. Bound to
-// loopback only by the api-server and never proxied externally. The worker
-// calls this at job start so secrets never travel through room metadata
-// (which is visible to every participant in the LiveKit room).
+// Internal-only: returns unredacted provider API keys for an agent.
+// Defense-in-depth: requires BOTH a loopback source IP AND a shared secret
+// header (INTERNAL_API_TOKEN) so a misconfigured proxy alone can't leak
+// keys. The worker reads the same env var at job start.
+import { writeFileSync, mkdirSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { randomBytes } from "node:crypto";
+import { join } from "node:path";
+
+const INTERNAL_TOKEN =
+  process.env["INTERNAL_API_TOKEN"] || randomBytes(24).toString("hex");
+process.env["INTERNAL_API_TOKEN"] = INTERNAL_TOKEN;
+// Persist the token to a tmp file so the LiveKit worker (separate process)
+// can read it without us having to share env vars across runtimes.
+try {
+  const dir = join(tmpdir(), "rapid-x");
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, "internal_token"), INTERNAL_TOKEN, { mode: 0o600 });
+} catch {
+  /* non-fatal — worker will fall back to env vars for keys */
+}
+
 const internalKeys: RequestHandler = async (req, res) => {
   const remote = req.socket.remoteAddress ?? "";
-  if (!["127.0.0.1", "::1", "::ffff:127.0.0.1"].includes(remote)) {
-    res.status(403).json({ error: "loopback only" });
+  const isLoopback = ["127.0.0.1", "::1", "::ffff:127.0.0.1"].includes(remote);
+  const token = req.header("x-internal-token") ?? "";
+  if (!isLoopback || token !== INTERNAL_TOKEN) {
+    res.status(403).json({ error: "forbidden" });
     return;
   }
   const a = await getAgent(String(req.params["id"]));

@@ -16,11 +16,14 @@
         "for sure,",
         "let me check,"
       ],
+      "provider_api_keys": {
+        "elevenlabs": "91671705b87fd4334f45a702da916657c62c5bf65e928ab9ab318a9c6516b179"
+      },
       "interruption_sensitivity": "high",
       "wait_for_user_first": false,
       "template_id": "appointment-booking",
       "created_at": "2026-05-03T13:16:15.925Z",
-      "updated_at": "2026-05-03T14:01:40.367Z"
+      "updated_at": "2026-05-03T14:31:00.498Z"
     }
   ],
   "calls": [
