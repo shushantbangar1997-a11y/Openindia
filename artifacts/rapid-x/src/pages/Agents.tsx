@@ -128,6 +128,12 @@ export default function AgentsPage() {
   };
 
   const { data: settings } = useSettings();
+  const elevenLabsGlobalKeySet = Boolean(settings?.elevenlabs_api_key);
+  const cartesiaGlobalKeySet = Boolean(settings?.cartesia_api_key);
+  const currentProviderGlobalKeySet =
+    draft.tts_provider === "elevenlabs" ? elevenLabsGlobalKeySet :
+    draft.tts_provider === "cartesia" ? cartesiaGlobalKeySet : false;
+  const currentProviderAgentKey = draft.provider_api_keys?.[draft.tts_provider as "elevenlabs" | "cartesia"];
   const elevenLabsKeySet = Boolean(
     settings?.elevenlabs_api_key || draft.provider_api_keys?.elevenlabs,
   );
@@ -384,20 +390,33 @@ export default function AgentsPage() {
                             value={draft.tts_provider}
                             onChange={(v) => setDraft({ ...draft, tts_provider: v as TtsProvider })}
                           >
-                            {(Object.keys(catalog.providers) as TtsProvider[]).map((p) => (
-                              <option key={p} value={p}>
-                                {catalog.providers[p].label}
-                                {!catalog.providers[p].available ? " — needs API key" : ""}
-                              </option>
-                            ))}
+                            {(Object.keys(catalog.providers) as TtsProvider[]).map((p) => {
+                              const pGlobal =
+                                p === "elevenlabs" ? elevenLabsGlobalKeySet :
+                                p === "cartesia" ? cartesiaGlobalKeySet : false;
+                              const pAvail = catalog.providers[p].available || pGlobal || Boolean(draft.provider_api_keys?.[p as "elevenlabs" | "cartesia"]);
+                              return (
+                                <option key={p} value={p}>
+                                  {catalog.providers[p].label}
+                                  {!pAvail ? " — needs API key" : ""}
+                                </option>
+                              );
+                            })}
                           </SfSelect>
+                          {currentProviderGlobalKeySet && (
+                            <div className="mt-1.5 flex items-center gap-1.5 text-[11px] text-violet-600 font-medium">
+                              <CheckCircle className="w-3 h-3 shrink-0" />
+                              Global key active
+                            </div>
+                          )}
                         </SfField>
                       </div>
                     </SfSection>
 
                     {/* API key onboarding */}
                     {!providerInfo?.available &&
-                      !(draft.provider_api_keys?.[draft.tts_provider as "elevenlabs" | "cartesia"]) && (
+                      !currentProviderAgentKey &&
+                      !currentProviderGlobalKeySet && (
                         <ApiKeyOnboarding
                           provider={draft.tts_provider as "elevenlabs" | "cartesia"}
                           agentId={selectedId}
@@ -407,10 +426,16 @@ export default function AgentsPage() {
                           }}
                         />
                       )}
-                    {draft.provider_api_keys?.[draft.tts_provider as "elevenlabs" | "cartesia"] && (
+                    {currentProviderAgentKey && (
                       <div className="px-3.5 py-2.5 rounded-xl bg-emerald-50 border border-emerald-200 text-emerald-700 text-xs flex items-center gap-2">
                         <CheckCircle className="w-3.5 h-3.5 shrink-0" />
                         <b className="capitalize">{draft.tts_provider}</b> API key saved — calls will use it directly.
+                      </div>
+                    )}
+                    {!currentProviderAgentKey && currentProviderGlobalKeySet && (
+                      <div className="px-3.5 py-2.5 rounded-xl bg-violet-50 border border-violet-200 text-violet-700 text-xs flex items-center gap-2">
+                        <CheckCircle className="w-3.5 h-3.5 shrink-0" />
+                        Using global key from Settings — no per-agent key needed.
                       </div>
                     )}
 
