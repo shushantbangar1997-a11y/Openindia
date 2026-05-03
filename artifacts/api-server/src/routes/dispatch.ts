@@ -1,5 +1,9 @@
 import { Router, type IRouter } from "express";
-import { getSipClient, isLivekitConfigured } from "../lib/livekit";
+import {
+  getRoomService,
+  getSipClient,
+  isLivekitConfigured,
+} from "../lib/livekit";
 
 const router: IRouter = Router();
 
@@ -38,6 +42,12 @@ router.post("/dispatch", async (req, res) => {
       user_prompt: prompt || "",
       model_provider: modelProvider || "openai",
       voice_id: voice || "alloy",
+    });
+
+    await getRoomService().createRoom({
+      name: roomName,
+      metadata,
+      emptyTimeout: 60 * 5,
     });
 
     // @ts-ignore - createSipParticipant signature
