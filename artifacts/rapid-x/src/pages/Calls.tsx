@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { History, Phone, User, Bot, Loader2 } from "lucide-react";
+import { History, Phone, User, Bot, Loader2, Clock, Calendar, Activity } from "lucide-react";
 import { useCall, useCalls, type CallRecord } from "@/lib/agents";
 
 export default function CallsPage() {
@@ -10,141 +10,135 @@ export default function CallsPage() {
   const selected = selectedId ?? calls[0]?.id ?? null;
 
   return (
-    <main className="z-10 px-6 py-8 max-w-6xl mx-auto">
-      <header className="mb-6">
-        <h1 className="text-3xl font-bold flex items-center gap-3">
-          <History className="w-7 h-7 text-blue-400" />
-          Call History
-        </h1>
-        <p className="text-gray-400 mt-1">
-          Every call your agents have made. Click one for the live transcript.
-        </p>
-      </header>
-
-      <div className="grid grid-cols-1 md:grid-cols-[360px_1fr] gap-6">
-        <aside className="bg-black/60 border border-white/10 rounded-2xl p-3 h-fit max-h-[70vh] overflow-y-auto">
+    <div className="flex h-screen overflow-hidden bg-[#F4F5F7]">
+      {/* Call list panel */}
+      <div className="w-[300px] shrink-0 bg-white border-r border-gray-200 flex flex-col h-full">
+        <div className="px-5 py-4 border-b border-gray-100">
+          <h1 className="text-[15px] font-semibold text-gray-900">Call History</h1>
+          <p className="text-xs text-gray-400 mt-0.5">
+            {calls.length} call{calls.length !== 1 ? "s" : ""} recorded
+          </p>
+        </div>
+        <div className="flex-1 overflow-y-auto py-2 px-2">
           {isLoading && (
-            <div className="p-3 text-sm text-gray-500 flex items-center gap-2">
-              <Loader2 className="w-4 h-4 animate-spin" /> Loading…
+            <div className="flex items-center gap-2 px-3 py-4 text-xs text-gray-400">
+              <Loader2 className="w-3.5 h-3.5 animate-spin" /> Loading…
             </div>
           )}
           {calls.length === 0 && !isLoading && (
-            <div className="p-4 text-sm text-gray-500">
-              No calls yet. Dispatch one from the Dispatch tab.
+            <div className="px-3 py-10 text-center">
+              <Phone className="w-8 h-8 text-gray-200 mx-auto mb-2" />
+              <p className="text-xs text-gray-400">No calls yet</p>
+              <p className="text-[11px] text-gray-300 mt-1">Dispatch a call from the Dispatch page</p>
             </div>
           )}
           {calls.map((c) => (
             <button
               key={c.id}
               onClick={() => setSelectedId(c.id)}
-              className={`w-full text-left px-3 py-3 rounded-lg text-sm mb-1 transition ${
+              className={`w-full text-left px-3 py-3 rounded-lg mb-0.5 transition-all border ${
                 c.id === selected
-                  ? "bg-white/10"
-                  : "hover:bg-white/5"
+                  ? "bg-violet-50 border-violet-200"
+                  : "border-transparent hover:bg-gray-50"
               }`}
             >
-              <div className="flex items-center justify-between gap-2">
-                <span className="font-medium text-white truncate">
+              <div className="flex items-center justify-between gap-2 mb-1">
+                <span className={`text-sm font-semibold truncate ${c.id === selected ? "text-violet-700" : "text-gray-800"}`}>
                   {c.phone_number}
                 </span>
                 <StatusPill status={c.status} />
               </div>
-              <div className="text-[11px] text-gray-500 mt-1 flex items-center justify-between">
+              <div className="flex items-center justify-between text-[11px] text-gray-400">
                 <span className="truncate">{c.agent_name ?? "—"}</span>
-                <span>{formatRelative(c.started_at)}</span>
+                <span className="shrink-0 ml-2">{formatRelative(c.started_at)}</span>
               </div>
             </button>
           ))}
-        </aside>
-
-        <section className="bg-black/60 border border-white/10 rounded-2xl p-6 min-h-[60vh]">
-          {selected ? (
-            <CallDetail callId={selected} />
-          ) : (
-            <div className="text-gray-500 text-sm">Select a call to view its transcript.</div>
-          )}
-        </section>
+        </div>
       </div>
-    </main>
+
+      {/* Detail panel */}
+      <div className="flex-1 flex flex-col h-full overflow-hidden">
+        {selected ? (
+          <CallDetail callId={selected} />
+        ) : (
+          <div className="flex-1 flex items-center justify-center">
+            <div className="text-center">
+              <Phone className="w-10 h-10 text-gray-200 mx-auto mb-3" />
+              <p className="text-sm text-gray-400">Select a call to view its details</p>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
   );
 }
 
 function CallDetail({ callId }: { callId: string }) {
   const { data, isLoading } = useCall(callId, 3000);
   const c = data?.call;
+
   if (isLoading || !c) {
     return (
-      <div className="text-sm text-gray-500 flex items-center gap-2">
-        <Loader2 className="w-4 h-4 animate-spin" /> Loading call…
+      <div className="flex items-center justify-center h-full">
+        <div className="flex items-center gap-2 text-sm text-gray-400">
+          <Loader2 className="w-4 h-4 animate-spin" /> Loading call…
+        </div>
       </div>
     );
   }
 
   return (
-    <div className="space-y-5">
-      <header className="border-b border-white/5 pb-4">
-        <div className="flex items-center justify-between gap-3 mb-2">
-          <h2 className="text-xl font-bold flex items-center gap-2">
-            <Phone className="w-5 h-5 text-blue-400" />
-            {c.phone_number}
-          </h2>
+    <div className="flex flex-col h-full overflow-hidden">
+      {/* Header */}
+      <div className="bg-white border-b border-gray-200 px-6 py-4 shrink-0">
+        <div className="flex items-center justify-between gap-3">
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 rounded-xl bg-gray-100 flex items-center justify-center">
+              <Phone className="w-5 h-5 text-gray-500" />
+            </div>
+            <div>
+              <h2 className="text-base font-semibold text-gray-900">{c.phone_number}</h2>
+              <p className="text-xs text-gray-400">{c.agent_name ?? "Unknown agent"}</p>
+            </div>
+          </div>
           <StatusPill status={c.status} />
         </div>
-        <div className="text-sm text-gray-400 grid grid-cols-2 gap-2 mt-3">
-          <Meta label="Agent" value={c.agent_name ?? "—"} />
-          <Meta label="Duration" value={formatDuration(c)} />
-          <Meta label="Started" value={new Date(c.started_at).toLocaleString()} />
-          <Meta
-            label="Ended"
-            value={c.ended_at ? new Date(c.ended_at).toLocaleString() : "—"}
-          />
-          {c.end_reason && (
-            <Meta label="End reason" value={c.end_reason} />
-          )}
-        </div>
-      </header>
 
-      <div>
-        <h3 className="text-xs uppercase tracking-wide text-gray-500 font-semibold mb-3">
-          Transcript
-        </h3>
+        {/* Meta grid */}
+        <div className="grid grid-cols-4 gap-3 mt-4">
+          <MetaCard icon={<Calendar className="w-3.5 h-3.5" />} label="Started" value={new Date(c.started_at).toLocaleString()} />
+          <MetaCard icon={<Clock className="w-3.5 h-3.5" />} label="Duration" value={formatDuration(c)} />
+          <MetaCard icon={<Bot className="w-3.5 h-3.5" />} label="Agent" value={c.agent_name ?? "—"} />
+          <MetaCard icon={<Activity className="w-3.5 h-3.5" />} label="End reason" value={c.end_reason ?? "—"} />
+        </div>
+      </div>
+
+      {/* Transcript */}
+      <div className="flex-1 overflow-y-auto px-6 py-5">
+        <h3 className="text-[11px] uppercase tracking-widest text-gray-400 font-semibold mb-4">Transcript</h3>
         {c.transcript.length === 0 ? (
-          <div className="text-sm text-gray-500">
+          <div className="text-sm text-gray-400 py-10 text-center">
             {c.status === "ringing" || c.status === "answered"
               ? "Waiting for the conversation to start…"
               : "No transcript captured for this call."}
           </div>
         ) : (
-          <div className="space-y-3 max-h-[55vh] overflow-y-auto pr-2">
+          <div className="space-y-3 max-w-2xl">
             {c.transcript.map((t, i) => (
-              <div
-                key={i}
-                className={`flex gap-3 ${
-                  t.role === "assistant" ? "" : "flex-row-reverse"
-                }`}
-              >
-                <div
-                  className={`shrink-0 w-8 h-8 rounded-full flex items-center justify-center ${
-                    t.role === "assistant"
-                      ? "bg-purple-500/20 text-purple-300"
-                      : "bg-blue-500/20 text-blue-300"
-                  }`}
-                >
-                  {t.role === "assistant" ? (
-                    <Bot className="w-4 h-4" />
-                  ) : (
-                    <User className="w-4 h-4" />
-                  )}
+              <div key={i} className={`flex gap-3 ${t.role === "assistant" ? "" : "flex-row-reverse"}`}>
+                <div className={`shrink-0 w-8 h-8 rounded-full flex items-center justify-center ${
+                  t.role === "assistant" ? "bg-violet-100 text-violet-600" : "bg-blue-100 text-blue-600"
+                }`}>
+                  {t.role === "assistant" ? <Bot className="w-4 h-4" /> : <User className="w-4 h-4" />}
                 </div>
-                <div
-                  className={`max-w-[75%] px-4 py-2 rounded-2xl text-sm ${
-                    t.role === "assistant"
-                      ? "bg-white/5 text-gray-100 rounded-tl-sm"
-                      : "bg-blue-600/20 text-blue-50 rounded-tr-sm"
-                  }`}
-                >
+                <div className={`max-w-[75%] px-4 py-2.5 rounded-2xl text-sm ${
+                  t.role === "assistant"
+                    ? "bg-white border border-gray-200 text-gray-800 rounded-tl-sm"
+                    : "bg-violet-600 text-white rounded-tr-sm"
+                }`}>
                   {t.text}
-                  <div className="text-[10px] text-gray-500 mt-1">
+                  <div className={`text-[10px] mt-1 ${t.role === "assistant" ? "text-gray-400" : "text-violet-200"}`}>
                     {new Date(t.ts).toLocaleTimeString()}
                   </div>
                 </div>
@@ -157,28 +151,29 @@ function CallDetail({ callId }: { callId: string }) {
   );
 }
 
-function Meta({ label, value }: { label: string; value: string }) {
+function MetaCard({ icon, label, value }: { icon: React.ReactNode; label: string; value: string }) {
   return (
-    <div>
-      <div className="text-[10px] uppercase tracking-wide text-gray-500">
+    <div className="bg-gray-50 rounded-xl px-3 py-2.5 border border-gray-100">
+      <div className="flex items-center gap-1.5 text-[10px] uppercase tracking-wide text-gray-400 font-semibold mb-1">
+        <span className="text-gray-400">{icon}</span>
         {label}
       </div>
-      <div className="text-gray-200">{value}</div>
+      <div className="text-xs font-semibold text-gray-700 truncate">{value}</div>
     </div>
   );
 }
 
 function StatusPill({ status }: { status: CallRecord["status"] }) {
-  const styles: Record<CallRecord["status"], string> = {
-    ringing: "bg-amber-500/15 text-amber-300 border-amber-500/30",
-    answered: "bg-emerald-500/15 text-emerald-300 border-emerald-500/30",
-    ended: "bg-gray-500/15 text-gray-300 border-gray-500/30",
-    failed: "bg-red-500/15 text-red-300 border-red-500/30",
+  const cfg: Record<CallRecord["status"], { bg: string; text: string; dot: string }> = {
+    ringing: { bg: "bg-amber-50 border-amber-200", text: "text-amber-700", dot: "bg-amber-400" },
+    answered: { bg: "bg-emerald-50 border-emerald-200", text: "text-emerald-700", dot: "bg-emerald-400" },
+    ended: { bg: "bg-gray-100 border-gray-200", text: "text-gray-500", dot: "bg-gray-400" },
+    failed: { bg: "bg-red-50 border-red-200", text: "text-red-600", dot: "bg-red-400" },
   };
+  const s = cfg[status];
   return (
-    <span
-      className={`text-[10px] uppercase tracking-wide px-2 py-0.5 rounded-full border ${styles[status]}`}
-    >
+    <span className={`inline-flex items-center gap-1.5 text-[11px] font-semibold px-2 py-0.5 rounded-full border ${s.bg} ${s.text}`}>
+      <span className={`w-1.5 h-1.5 rounded-full ${s.dot}`} />
       {status}
     </span>
   );

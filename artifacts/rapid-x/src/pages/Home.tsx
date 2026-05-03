@@ -1,29 +1,30 @@
 import CallDispatcher from "@/components/CallDispatcher";
 import BulkDialer from "@/components/BulkDialer";
+import { Phone, Users, Zap } from "lucide-react";
 
 export default function Home() {
   return (
-    <main className="z-10 px-4 py-10 flex flex-col items-center">
-      <header className="text-center space-y-3 animate-in fade-in slide-in-from-top-4 duration-500 mb-10">
-        <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-white/5 border border-white/10 text-xs font-medium text-purple-300">
-          <span className="relative flex h-2 w-2">
-            <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75" />
-            <span className="relative inline-flex rounded-full h-2 w-2 bg-green-500" />
-          </span>
-          System Online
+    <div className="min-h-screen bg-[#F4F5F7]">
+      {/* Page header */}
+      <div className="bg-white border-b border-gray-200 px-8 py-5">
+        <div className="flex items-center gap-3">
+          <div className="w-9 h-9 rounded-xl bg-violet-600 flex items-center justify-center shadow-sm shadow-violet-200">
+            <Phone className="w-4.5 h-4.5 text-white" />
+          </div>
+          <div>
+            <h1 className="text-[15px] font-semibold text-gray-900">Dispatch</h1>
+            <p className="text-xs text-gray-400">Launch outbound calls from your AI assistants</p>
+          </div>
         </div>
-        <h1 className="text-5xl md:text-6xl font-extrabold tracking-tight">
-          Dispatch a call
-        </h1>
-        <p className="text-lg text-gray-400 max-w-2xl mx-auto font-light">
-          Pick an agent, drop in a phone number, and watch it talk.
-        </p>
-      </header>
-
-      <div className="flex flex-col md:flex-row gap-8 w-full justify-center items-start max-w-5xl">
-        <CallDispatcher />
-        <BulkDialer />
       </div>
-    </main>
+
+      {/* Content */}
+      <div className="px-8 py-8">
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 max-w-4xl">
+          <CallDispatcher />
+          <BulkDialer />
+        </div>
+      </div>
+    </div>
   );
 }
