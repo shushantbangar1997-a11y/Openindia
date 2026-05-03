@@ -53,6 +53,21 @@ except Exception:
     MultilingualModel = None  # type: ignore
     _multilingual_available = False
 
+def _clean_key(value: str) -> str:
+    """Strip invisible Unicode characters (line/paragraph separators, BOM, etc.)
+    that break ASCII header encoding when keys are copy-pasted from browsers."""
+    import re
+    return re.sub(r"[^\x20-\x7E]", "", value).strip()
+
+# Sanitize all API keys in-place so copy-paste Unicode artefacts never
+# reach HTTP headers (httpx encodes header values as ASCII).
+for _env_key in ("GROQ_API_KEY", "DEEPGRAM_API_KEY",
+                 "LIVEKIT_API_KEY", "LIVEKIT_API_SECRET",
+                 "ELEVENLABS_API_KEY", "CARTESIA_API_KEY"):
+    _v = os.getenv(_env_key, "")
+    if _v:
+        os.environ[_env_key] = _clean_key(_v)
+
 REQUIRED_ENV = (
     "LIVEKIT_URL", "LIVEKIT_API_KEY", "LIVEKIT_API_SECRET",
     "GROQ_API_KEY", "DEEPGRAM_API_KEY",
