@@ -1,32 +1,47 @@
 """Rapid X AI — outbound voice agent worker.
 
 Joins LiveKit rooms created by the dashboard's /api/dispatch endpoint (or
-browser-test rooms minted by /api/agents/:id/test-token), runs Deepgram STT +
-Groq LLM + Deepgram TTS, and talks to the human.
+browser-test rooms minted by /api/agents/:id/test-token), runs the
+configured STT → LLM → TTS pipeline, and talks to the human.
 
 Reads per-call config from `room.metadata` (JSON):
-  agent_id, agent_name, user_prompt, greeting, voice_id, language,
-  wait_for_user_first, mode ("browser-test" or unset for phone calls)
+  agent_id, agent_name, user_prompt, greeting,
+  tts_provider ("deepgram" | "elevenlabs" | "cartesia"),
+  voice_id, language,
+  speaking_speed (0.8 - 1.3),
+  fillers_enabled (bool),
+  interruption_sensitivity ("low" | "medium" | "high"),
+  wait_for_user_first (bool),
+  mode ("browser-test" or unset for phone calls)
 
-Env vars required:
-  LIVEKIT_URL, LIVEKIT_API_KEY, LIVEKIT_API_SECRET
-  GROQ_API_KEY
-  DEEPGRAM_API_KEY
-Optional:
-  INTERNAL_API_URL (default http://localhost:8080) — base URL of the api-server
-                   for posting call events / transcript turns back.
+Required env: LIVEKIT_URL, LIVEKIT_API_KEY, LIVEKIT_API_SECRET,
+              GROQ_API_KEY, DEEPGRAM_API_KEY
+Optional env: ELEVENLABS_API_KEY, CARTESIA_API_KEY,
+              INTERNAL_API_URL (default http://localhost:8080)
 """
 
 import asyncio
 import json
 import logging
 import os
+import random
 import urllib.request
 from typing import Optional
 
 from livekit import agents, rtc
 from livekit.agents import Agent, AgentSession, RoomInputOptions
 from livekit.plugins import deepgram, noise_cancellation, openai, silero
+
+# Optional premium TTS providers — imported lazily so missing keys don't crash.
+try:
+    from livekit.plugins import elevenlabs as elevenlabs_plugin  # type: ignore
+except Exception:
+    elevenlabs_plugin = None  # type: ignore
+
+try:
+    from livekit.plugins import cartesia as cartesia_plugin  # type: ignore
+except Exception:
+    cartesia_plugin = None  # type: ignore
 
 REQUIRED_ENV = (
     "LIVEKIT_URL", "LIVEKIT_API_KEY", "LIVEKIT_API_SECRET",
@@ -42,13 +57,38 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("rapid-x-agent")
 
 DEFAULT_SYSTEM_PROMPT = (
-    "You are a friendly, concise AI voice assistant. Keep replies short "
-    "(1-2 sentences). End the call warmly when the user says goodbye."
+    "You are a friendly, concise voice assistant. Keep replies short "
+    "(1-2 sentences). Use contractions and a casual, human tone. "
+    "End the call warmly when the user says goodbye."
 )
-
 DEFAULT_GREETING = (
     "Greet the user warmly in one short sentence and ask how you can help."
 )
+
+# Filler phrases by language. Played while the LLM is generating to avoid
+# dead air. Kept very short so they don't slow the conversation.
+FILLERS = {
+    "en": ["mm-hmm,", "right,", "okay,", "got it,", "let me see,", "sure,"],
+    "es": ["mm-hmm,", "claro,", "vale,", "a ver,", "entiendo,"],
+    "fr": ["mm-hmm,", "d'accord,", "voyons,", "bien sûr,", "je vois,"],
+    "de": ["mm-hmm,", "okay,", "verstehe,", "mal sehen,", "klar,"],
+    "it": ["mm-hmm,", "okay,", "vediamo,", "certo,", "capisco,"],
+    "pt": ["mm-hmm,", "claro,", "tá,", "entendi,", "deixa ver,"],
+    "hi": ["हाँ,", "ठीक है,", "अच्छा,", "एक मिनट,"],
+    "ja": ["うん,", "はい,", "そうですね,", "ええと,"],
+    "zh": ["嗯,", "好的,", "我想想,", "明白了,"],
+    "ko": ["음,", "네,", "그렇군요,", "잠시만요,"],
+    "ar": ["نعم,", "حسناً,", "لحظة,", "فهمت,"],
+}
+
+# Map our friendly sensitivity setting to Deepgram's endpointing window (ms).
+ENDPOINTING_MS = {"low": 600, "medium": 350, "high": 180}
+
+
+def _filler_for(language: str) -> str:
+    base = (language or "en").split("-")[0].lower()
+    bank = FILLERS.get(base, FILLERS["en"])
+    return random.choice(bank)
 
 
 def build_llm():
@@ -60,25 +100,70 @@ def build_llm():
     )
 
 
-def build_tts(voice_id: Optional[str] = None):
-    model = voice_id or os.getenv("DEEPGRAM_TTS_MODEL", "aura-asteria-en")
+def build_stt(model: str, stt_language: str, language: str):
+    """STT engine. Model + language come from the api-server's catalog
+    (single source of truth in artifacts/api-server/src/lib/voices.ts);
+    we only fall back to a heuristic if the metadata is missing."""
+    if not model or not stt_language:
+        base = (language or "en-US").split("-")[0].lower()
+        model = "nova-3" if base == "en" else "nova-2"
+        stt_language = "multi" if base == "ar" else (language or "en-US")
+    try:
+        return deepgram.STT(model=model, language=stt_language)
+    except Exception:
+        base = (language or "en-US").split("-")[0].lower()
+        return deepgram.STT(model="nova-2", language=base)
+
+
+def build_tts(provider: str, voice_id: str, language: str, speed: float):
+    """Construct the requested TTS engine, gracefully falling back to
+    Deepgram Aura if the premium provider isn't available."""
+    provider = (provider or "deepgram").lower()
+    speed = max(0.8, min(1.3, float(speed or 1.0)))
+
+    if provider == "elevenlabs":
+        if elevenlabs_plugin and os.getenv("ELEVENLABS_API_KEY"):
+            try:
+                Voice = getattr(elevenlabs_plugin, "Voice", None)
+                if Voice is not None:
+                    voice = Voice(id=voice_id, name=voice_id, category="premade")
+                    return elevenlabs_plugin.TTS(
+                        voice=voice,
+                        model="eleven_multilingual_v2",
+                    )
+                # Newer plugin signature: voice_id kwarg.
+                return elevenlabs_plugin.TTS(
+                    voice_id=voice_id,
+                    model="eleven_multilingual_v2",
+                )
+            except Exception as e:
+                logger.warning(f"ElevenLabs init failed, falling back: {e}")
+        else:
+            logger.warning("ElevenLabs requested but plugin or key missing — falling back to Deepgram")
+
+    if provider == "cartesia":
+        if cartesia_plugin and os.getenv("CARTESIA_API_KEY"):
+            try:
+                base = (language or "en").split("-")[0].lower()
+                return cartesia_plugin.TTS(
+                    voice=voice_id,
+                    model="sonic-2",
+                    language=base,
+                    speed=speed,
+                )
+            except Exception as e:
+                logger.warning(f"Cartesia init failed, falling back: {e}")
+        else:
+            logger.warning("Cartesia requested but plugin or key missing — falling back to Deepgram")
+
+    # Deepgram Aura fallback / default. Aura voices are English-only;
+    # for other languages we still use them but the LLM speaks the target
+    # language phonetically — better than silence.
+    model = voice_id if voice_id and voice_id.startswith("aura") else "aura-2-thalia-en"
     return deepgram.TTS(model=model)
 
 
-def build_stt(language: Optional[str] = None):
-    return deepgram.STT(
-        model=os.getenv("DEEPGRAM_STT_MODEL", "nova-2"),
-        language=language or os.getenv("DEEPGRAM_STT_LANGUAGE", "en"),
-    )
-
-
-class OutboundAssistant(Agent):
-    def __init__(self, instructions: str) -> None:
-        super().__init__(instructions=instructions)
-
-
 def _post_back(path: str, payload: dict) -> None:
-    """Best-effort POST back to the api-server. Never raises."""
     try:
         url = f"{INTERNAL_API_URL}{path}"
         data = json.dumps(payload).encode("utf-8")
@@ -94,19 +179,11 @@ async def _post_back_async(path: str, payload: dict) -> None:
     await asyncio.to_thread(_post_back, path, payload)
 
 
-def _is_sip_participant(p: rtc.RemoteParticipant) -> bool:
-    # SIP participants get identities like "sip_+91…" from our dispatch route.
-    # Browser testers join with identities like "tester-…".
-    return p.identity.startswith("sip_") or "sip" in (p.kind or "").lower()
-
-
 async def _wait_for_callee(
     room: rtc.Room, timeout: float
 ) -> Optional[rtc.RemoteParticipant]:
-    """Resolve when a remote participant joins (SIP callee or browser tester)."""
     for p in room.remote_participants.values():
         return p
-
     fut: asyncio.Future[rtc.RemoteParticipant] = asyncio.get_running_loop().create_future()
 
     def _on_join(participant: rtc.RemoteParticipant) -> None:
@@ -125,11 +202,40 @@ async def _wait_for_callee(
             pass
 
 
+def _build_persona(user_prompt: str, language: str, speaking_speed: float) -> str:
+    """Stitch a small, opinionated language/style header onto the user prompt
+    so the LLM consistently sounds human and stays in the right language."""
+    lang_label = language or "en-US"
+    pace = "a normal pace"
+    if speaking_speed >= 1.15:
+        pace = "a slightly quick pace"
+    elif speaking_speed <= 0.9:
+        pace = "a slightly slower pace"
+    header = (
+        f"# Conversation rules\n"
+        f"- This is a live phone call. Speak naturally at {pace}.\n"
+        f"- Always reply in language: {lang_label}. If the caller switches "
+        f"language mid-call, follow them.\n"
+        f"- Use contractions and casual phrasing. Keep replies short "
+        f"(usually one or two sentences).\n"
+        f"- Never reveal that you are an AI, model, or bot. If asked, say "
+        f"you're calling on behalf of the company.\n"
+        f"- Numbers, dates and prices should be written the way you'd say "
+        f"them out loud.\n"
+    )
+    body = (user_prompt or DEFAULT_SYSTEM_PROMPT).strip()
+    return f"{header}\n# Your role\n{body}"
+
+
+class OutboundAssistant(Agent):
+    def __init__(self, instructions: str) -> None:
+        super().__init__(instructions=instructions)
+
+
 async def entrypoint(ctx: agents.JobContext):
     logger.info(f"Joining room: {ctx.room.name}")
     await ctx.connect()
 
-    # Parse config from room metadata.
     cfg: dict = {}
     try:
         if ctx.room.metadata:
@@ -139,17 +245,27 @@ async def entrypoint(ctx: agents.JobContext):
 
     user_prompt = (cfg.get("user_prompt") or "").strip()
     greeting = (cfg.get("greeting") or "").strip()
-    voice_id = (cfg.get("voice_id") or "").strip() or None
-    language = (cfg.get("language") or "").strip() or None
+    tts_provider = (cfg.get("tts_provider") or "deepgram").strip().lower()
+    voice_id = (cfg.get("voice_id") or "aura-2-thalia-en").strip()
+    language = (cfg.get("language") or "en-US").strip()
+    stt_model = (cfg.get("stt_model") or "").strip()
+    stt_language = (cfg.get("stt_language") or "").strip()
+    speaking_speed = float(cfg.get("speaking_speed") or 1.0)
+    fillers_enabled = bool(cfg.get("fillers_enabled", True))
+    sensitivity = (cfg.get("interruption_sensitivity") or "medium").strip().lower()
     wait_for_user_first = bool(cfg.get("wait_for_user_first"))
     mode = (cfg.get("mode") or "").strip()
 
-    instructions = user_prompt or DEFAULT_SYSTEM_PROMPT
+    instructions = _build_persona(user_prompt, language, speaking_speed)
+    endpointing = ENDPOINTING_MS.get(sensitivity, ENDPOINTING_MS["medium"])
 
-    # ── Wait for the callee BEFORE starting the session, so the session lives
-    # alongside an actual conversation partner. Starting the session in an
-    # empty room (with close_on_disconnect) caused it to tear down before we
-    # could greet the caller.
+    logger.info(
+        f"Config: provider={tts_provider} voice={voice_id} lang={language} "
+        f"speed={speaking_speed} fillers={fillers_enabled} sens={sensitivity}"
+    )
+
+    # Wait for the callee BEFORE starting the session so we never start
+    # a session in an empty room (close_on_disconnect would tear it down).
     callee = await _wait_for_callee(ctx.room, timeout=90)
     if callee is None:
         logger.warning("No callee joined within 90s; ending job")
@@ -166,11 +282,15 @@ async def entrypoint(ctx: agents.JobContext):
         {"type": "answered"},
     )
 
+    # Build pipeline. min_endpointing_delay tunes barge-in / interruption
+    # responsiveness on AgentSession.
     session = AgentSession(
         vad=silero.VAD.load(),
-        stt=build_stt(language),
+        stt=build_stt(stt_model, stt_language, language),
         llm=build_llm(),
-        tts=build_tts(voice_id),
+        tts=build_tts(tts_provider, voice_id, language, speaking_speed),
+        min_endpointing_delay=endpointing / 1000.0,
+        allow_interruptions=True,
     )
 
     # Stream conversation turns back to the api-server for the transcript view.
@@ -192,6 +312,30 @@ async def entrypoint(ctx: agents.JobContext):
         except Exception as e:
             logger.debug(f"transcript hook failed: {e}")
 
+    # Filler engine: when the user finishes speaking, drop a short conversational
+    # acknowledgement before the LLM reply lands. Eliminates the awkward dead-air
+    # gap while the LLM is generating.
+    if fillers_enabled:
+        @session.on("user_input_transcribed")
+        def _on_user_done(ev) -> None:
+            try:
+                # Only react to FINAL transcripts, not interim ones.
+                if not getattr(ev, "is_final", False):
+                    return
+                text = (getattr(ev, "transcript", "") or "").strip()
+                if len(text) < 3:
+                    return
+                phrase = _filler_for(language)
+                # Don't add the filler to the LLM chat context — it's audio fluff.
+                async def _say():
+                    try:
+                        await session.say(phrase, add_to_chat_ctx=False, allow_interruptions=True)
+                    except Exception as e:
+                        logger.debug(f"filler say failed: {e}")
+                asyncio.create_task(_say())
+            except Exception as e:
+                logger.debug(f"filler hook failed: {e}")
+
     await session.start(
         room=ctx.room,
         agent=OutboundAssistant(instructions),
@@ -202,14 +346,18 @@ async def entrypoint(ctx: agents.JobContext):
     )
 
     if not wait_for_user_first:
-        greeting_instr = greeting or DEFAULT_GREETING
+        # If the user gave us a literal greeting, SAY it verbatim — that way
+        # they get exactly the opening line they wrote. Otherwise let the LLM
+        # generate a greeting from instructions.
         try:
-            await session.generate_reply(instructions=greeting_instr)
+            if greeting and len(greeting) > 0:
+                await session.say(greeting, allow_interruptions=True)
+            else:
+                await session.generate_reply(instructions=DEFAULT_GREETING)
         except Exception as e:
             logger.error(f"Initial greeting failed: {e}")
 
-    # When the callee disconnects, mark the call ended. close_on_disconnect
-    # will tear down the session shortly after this fires.
+    # End-of-call detection.
     end_fut: asyncio.Future[str] = asyncio.get_running_loop().create_future()
 
     def _on_leave(p: rtc.RemoteParticipant) -> None:

@@ -4,7 +4,7 @@ import {
   getSipClient,
   isLivekitConfigured,
 } from "../lib/livekit";
-import { createCall, getAgent, listAgents } from "../lib/db";
+import { buildAgentMetadata, createCall, getAgent, listAgents } from "../lib/db";
 
 const router: IRouter = Router();
 
@@ -40,10 +40,6 @@ router.post("/queue", async (req, res) => {
         .json({ error: "No agents configured. Create one in Agents." });
     }
 
-    const combinedPrompt = [agent.system_prompt, prompt]
-      .filter((p) => p && String(p).trim())
-      .join("\n\n## Per-call context\n");
-
     const roomService = getRoomService();
     const sipClient = getSipClient();
     const results: Array<Record<string, unknown>> = [];
@@ -55,15 +51,9 @@ router.post("/queue", async (req, res) => {
         )}`;
         const participantIdentity = `sip_${phoneNumber}`;
 
-        const metadata = JSON.stringify({
-          phone_number: phoneNumber,
-          agent_id: agent.id,
-          agent_name: agent.name,
-          user_prompt: combinedPrompt,
-          greeting: agent.greeting,
-          voice_id: agent.voice_id,
-          language: agent.language,
-          wait_for_user_first: agent.wait_for_user_first,
+        const metadata = buildAgentMetadata(agent, {
+          phone_number: String(phoneNumber),
+          per_call_prompt: prompt,
         });
 
         await roomService.createRoom({

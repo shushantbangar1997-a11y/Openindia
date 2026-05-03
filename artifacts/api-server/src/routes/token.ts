@@ -5,7 +5,7 @@ import {
   getRoomService,
   isLivekitConfigured,
 } from "../lib/livekit";
-import { getAgent, createCall, newId } from "../lib/db";
+import { getAgent, createCall, newId, buildAgentMetadata } from "../lib/db";
 
 const router: IRouter = Router();
 
@@ -30,16 +30,7 @@ router.post("/agents/:id/test-token", async (req, res) => {
     const roomName = `test-${agent.id.slice(-6)}-${newId("r").slice(-6)}`;
     const identity = `tester-${newId("u").slice(-6)}`;
 
-    const metadata = JSON.stringify({
-      mode: "browser-test",
-      agent_id: agent.id,
-      agent_name: agent.name,
-      user_prompt: agent.system_prompt,
-      greeting: agent.greeting,
-      voice_id: agent.voice_id,
-      language: agent.language,
-      wait_for_user_first: agent.wait_for_user_first,
-    });
+    const metadata = buildAgentMetadata(agent, { mode: "browser-test" });
 
     await getRoomService().createRoom({
       name: roomName,
@@ -47,7 +38,6 @@ router.post("/agents/:id/test-token", async (req, res) => {
       emptyTimeout: 60 * 5,
     });
 
-    // Log this as a call so transcripts show up too.
     await createCall({
       agent_id: agent.id,
       agent_name: agent.name,

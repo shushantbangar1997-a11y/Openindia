@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import {
   Bot,
@@ -8,41 +8,64 @@ import {
   Loader2,
   Mic,
   CheckCircle,
+  Sparkles,
+  Languages,
+  Gauge,
+  MessageSquare,
+  Settings2,
+  AlertCircle,
 } from "lucide-react";
-import { type Agent, useAgents } from "@/lib/agents";
+import { type Agent, useAgents, useCatalog } from "@/lib/agents";
 import { apiSend } from "@/lib/api";
-import { LANGUAGES, VOICES } from "@/lib/voices";
+import {
+  DEFAULT_LANGUAGE_ID,
+  DEFAULT_VOICE_ID,
+  FALLBACK_CATALOG,
+  type Catalog,
+  type TtsProvider,
+  voicesFor,
+} from "@/lib/voices";
 import AgentTestModal from "@/components/AgentTestModal";
 
-const EMPTY: Omit<Agent, "id" | "created_at" | "updated_at"> = {
+type Draft = Omit<Agent, "id" | "created_at" | "updated_at">;
+
+const EMPTY: Draft = {
   name: "",
   system_prompt: "",
   greeting: "",
-  voice_id: "aura-asteria-en",
-  language: "en",
+  tts_provider: "deepgram",
+  voice_id: DEFAULT_VOICE_ID,
+  language: DEFAULT_LANGUAGE_ID,
+  speaking_speed: 1.0,
+  fillers_enabled: true,
+  interruption_sensitivity: "medium",
   wait_for_user_first: false,
+  template_id: null,
 };
+
+type Tab = "persona" | "voice" | "behavior";
 
 export default function AgentsPage() {
   const qc = useQueryClient();
   const { data, isLoading } = useAgents();
+  const { data: catalogData } = useCatalog();
+  const catalog: Catalog = catalogData ?? FALLBACK_CATALOG;
   const agents = data?.agents ?? [];
 
   const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [draft, setDraft] = useState(EMPTY);
+  const [draft, setDraft] = useState<Draft>(EMPTY);
   const [creating, setCreating] = useState(false);
   const [saving, setSaving] = useState(false);
   const [savedAt, setSavedAt] = useState<number | null>(null);
   const [testOpen, setTestOpen] = useState(false);
+  const [tab, setTab] = useState<Tab>("persona");
 
-  // Auto-select first agent on load.
   useEffect(() => {
     if (!selectedId && !creating && agents.length > 0) {
       setSelectedId(agents[0]!.id);
     }
   }, [agents, selectedId, creating]);
 
-  // Sync draft when selection changes.
   useEffect(() => {
     if (creating) {
       setDraft(EMPTY);
@@ -52,10 +75,18 @@ export default function AgentsPage() {
     if (a) setDraft({ ...a });
   }, [selectedId, creating, agents]);
 
+  // Auto-clear "Saved" badge after a few seconds.
+  useEffect(() => {
+    if (!savedAt) return;
+    const t = setTimeout(() => setSavedAt(null), 2500);
+    return () => clearTimeout(t);
+  }, [savedAt]);
+
   const onPick = (id: string) => {
     setCreating(false);
     setSelectedId(id);
     setSavedAt(null);
+    setTab("persona");
   };
 
   const onNew = () => {
@@ -63,6 +94,7 @@ export default function AgentsPage() {
     setSelectedId(null);
     setDraft({ ...EMPTY, name: "New Agent" });
     setSavedAt(null);
+    setTab("persona");
   };
 
   const onSave = async () => {
@@ -95,6 +127,33 @@ export default function AgentsPage() {
     setSelectedId(null);
   };
 
+  const onPickTemplate = (templateId: string) => {
+    const t = catalog.templates.find((x) => x.id === templateId);
+    if (!t) return;
+    setDraft((d) => ({
+      ...d,
+      template_id: t.id === "blank" ? null : t.id,
+      system_prompt: t.system_prompt,
+      greeting: t.greeting,
+    }));
+  };
+
+  const availableVoices = useMemo(
+    () => voicesFor(catalog, draft.tts_provider, draft.language),
+    [catalog, draft.tts_provider, draft.language],
+  );
+
+  // If user changes provider/language, ensure the voice is still valid.
+  useEffect(() => {
+    if (availableVoices.length === 0) return;
+    if (!availableVoices.find((v) => v.id === draft.voice_id)) {
+      setDraft((d) => ({ ...d, voice_id: availableVoices[0]!.id }));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [draft.tts_provider, draft.language, availableVoices.length]);
+
+  const providerInfo = catalog.providers[draft.tts_provider];
+
   return (
     <main className="z-10 px-6 py-8 max-w-6xl mx-auto">
       <header className="mb-8">
@@ -103,13 +162,13 @@ export default function AgentsPage() {
           AI Agents
         </h1>
         <p className="text-gray-400 mt-1">
-          Define how your agent talks. Train it with a prompt — it'll use that
-          on every call.
+          Build agents that sound like real people. Pick a template, pick a
+          voice, pick a language — your agent uses these on every call.
         </p>
       </header>
 
       <div className="grid grid-cols-1 md:grid-cols-[280px_1fr] gap-6">
-        {/* List */}
+        {/* Sidebar */}
         <aside className="bg-black/60 border border-white/10 rounded-2xl p-3 h-fit">
           <button
             onClick={onNew}
@@ -132,7 +191,7 @@ export default function AgentsPage() {
               >
                 <div className="font-medium truncate">{a.name}</div>
                 <div className="text-[11px] text-gray-500 truncate">
-                  {a.voice_id}
+                  {a.language} · {a.voice_id}
                 </div>
               </button>
             );
@@ -177,79 +236,270 @@ export default function AgentsPage() {
                 </div>
               </div>
 
-              <Field label="System prompt (the agent's personality & instructions)">
-                <textarea
-                  value={draft.system_prompt}
-                  onChange={(e) =>
-                    setDraft({ ...draft, system_prompt: e.target.value })
-                  }
-                  rows={10}
-                  placeholder={
-                    "You are a friendly receptionist for Acme Dental.\nKeep replies short. Ask the caller what they need, then offer to book an appointment Mon–Fri 9am–5pm."
-                  }
-                  className="w-full px-3 py-2 bg-white/5 border border-white/10 rounded-lg font-mono text-sm focus:outline-none focus:ring-2 focus:ring-purple-500 resize-y"
+              {/* Tabs */}
+              <div className="flex gap-1 border-b border-white/10">
+                <TabBtn
+                  active={tab === "persona"}
+                  onClick={() => setTab("persona")}
+                  icon={<MessageSquare className="w-4 h-4" />}
+                  label="Persona"
                 />
-              </Field>
-
-              <Field label="Opening line (what the agent says first)">
-                <textarea
-                  value={draft.greeting}
-                  onChange={(e) =>
-                    setDraft({ ...draft, greeting: e.target.value })
-                  }
-                  rows={2}
-                  placeholder="Hi, this is Sarah from Acme Dental — how can I help?"
-                  className="w-full px-3 py-2 bg-white/5 border border-white/10 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-purple-500 resize-y"
+                <TabBtn
+                  active={tab === "voice"}
+                  onClick={() => setTab("voice")}
+                  icon={<Sparkles className="w-4 h-4" />}
+                  label="Voice"
                 />
-              </Field>
-
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                <Field label="Voice">
-                  <select
-                    value={draft.voice_id}
-                    onChange={(e) =>
-                      setDraft({ ...draft, voice_id: e.target.value })
-                    }
-                    className="w-full px-3 py-2 bg-white/5 border border-white/10 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-purple-500"
-                  >
-                    {VOICES.map((v) => (
-                      <option key={v.id} value={v.id}>
-                        {v.label}
-                      </option>
-                    ))}
-                  </select>
-                </Field>
-                <Field label="Language">
-                  <select
-                    value={draft.language}
-                    onChange={(e) =>
-                      setDraft({ ...draft, language: e.target.value })
-                    }
-                    className="w-full px-3 py-2 bg-white/5 border border-white/10 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-purple-500"
-                  >
-                    {LANGUAGES.map((l) => (
-                      <option key={l.id} value={l.id}>
-                        {l.label}
-                      </option>
-                    ))}
-                  </select>
-                </Field>
+                <TabBtn
+                  active={tab === "behavior"}
+                  onClick={() => setTab("behavior")}
+                  icon={<Settings2 className="w-4 h-4" />}
+                  label="Behavior"
+                />
               </div>
 
-              <label className="flex items-center gap-3 text-sm text-gray-300">
-                <input
-                  type="checkbox"
-                  checked={draft.wait_for_user_first}
-                  onChange={(e) =>
-                    setDraft({
-                      ...draft,
-                      wait_for_user_first: e.target.checked,
-                    })
-                  }
-                  className="w-4 h-4 accent-purple-500"
-                />
-                Wait for the caller to speak first (don't auto-greet)
-              </label>
+              {tab === "persona" && (
+                <>
+                  <Field label="Start from a template (optional)">
+                    <div className="grid grid-cols-2 md:grid-cols-3 gap-2">
+                      {catalog.templates.map((t) => {
+                        const active = (draft.template_id ?? "blank") === t.id;
+                        return (
+                          <button
+                            key={t.id}
+                            onClick={() => onPickTemplate(t.id)}
+                            className={`text-left px-3 py-2 rounded-lg border text-xs transition ${
+                              active
+                                ? "bg-purple-600/20 border-purple-500/40 text-purple-200"
+                                : "bg-white/5 border-white/10 text-gray-300 hover:bg-white/10"
+                            }`}
+                          >
+                            <div className="font-semibold mb-0.5">{t.label}</div>
+                            <div className="text-[11px] text-gray-400 line-clamp-2">
+                              {t.description}
+                            </div>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </Field>
+
+                  <Field label="System prompt — the agent's personality & rules">
+                    <textarea
+                      value={draft.system_prompt}
+                      onChange={(e) =>
+                        setDraft({ ...draft, system_prompt: e.target.value })
+                      }
+                      rows={14}
+                      placeholder="You are a friendly receptionist for Acme Dental. Use contractions. Keep replies short. Ask the caller what they need…"
+                      className="w-full px-3 py-2 bg-white/5 border border-white/10 rounded-lg font-mono text-sm focus:outline-none focus:ring-2 focus:ring-purple-500 resize-y"
+                    />
+                  </Field>
+
+                  <Field label="Opening line — what the agent says first">
+                    <textarea
+                      value={draft.greeting}
+                      onChange={(e) =>
+                        setDraft({ ...draft, greeting: e.target.value })
+                      }
+                      rows={2}
+                      placeholder="Hi, this is Sarah from Acme Dental — how can I help?"
+                      className="w-full px-3 py-2 bg-white/5 border border-white/10 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-purple-500 resize-y"
+                    />
+                    <p className="text-[11px] text-gray-500 mt-1">
+                      Spoken verbatim when the call connects (unless "wait for
+                      caller to speak first" is on).
+                    </p>
+                  </Field>
+                </>
+              )}
+
+              {tab === "voice" && (
+                <>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <Field
+                      label={
+                        <span className="flex items-center gap-1.5">
+                          <Languages className="w-3.5 h-3.5" /> Language
+                        </span>
+                      }
+                    >
+                      <select
+                        value={draft.language}
+                        onChange={(e) =>
+                          setDraft({ ...draft, language: e.target.value })
+                        }
+                        className="w-full px-3 py-2 bg-white/5 border border-white/10 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-purple-500"
+                      >
+                        {catalog.languages.map((l) => (
+                          <option key={l.id} value={l.id}>
+                            {l.label}
+                          </option>
+                        ))}
+                      </select>
+                    </Field>
+
+                    <Field label="Voice provider">
+                      <select
+                        value={draft.tts_provider}
+                        onChange={(e) =>
+                          setDraft({
+                            ...draft,
+                            tts_provider: e.target.value as TtsProvider,
+                          })
+                        }
+                        className="w-full px-3 py-2 bg-white/5 border border-white/10 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-purple-500"
+                      >
+                        {(Object.keys(catalog.providers) as TtsProvider[]).map(
+                          (p) => (
+                            <option key={p} value={p}>
+                              {catalog.providers[p].label}
+                              {!catalog.providers[p].available
+                                ? " — needs API key"
+                                : ""}
+                            </option>
+                          ),
+                        )}
+                      </select>
+                    </Field>
+                  </div>
+
+                  {!providerInfo?.available && (
+                    <div className="flex items-start gap-2 p-3 rounded-lg bg-amber-500/10 border border-amber-500/30 text-amber-200 text-xs">
+                      <AlertCircle className="w-4 h-4 mt-0.5 flex-shrink-0" />
+                      <div>
+                        This provider needs an API key. Add{" "}
+                        <code className="px-1 rounded bg-black/30">
+                          {draft.tts_provider === "elevenlabs"
+                            ? "ELEVENLABS_API_KEY"
+                            : "CARTESIA_API_KEY"}
+                        </code>{" "}
+                        in Replit Secrets, then restart the agent worker.
+                        Until then we'll fall back to Deepgram.
+                      </div>
+                    </div>
+                  )}
+
+                  <Field label="Voice">
+                    <select
+                      value={draft.voice_id}
+                      onChange={(e) =>
+                        setDraft({ ...draft, voice_id: e.target.value })
+                      }
+                      className="w-full px-3 py-2 bg-white/5 border border-white/10 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-purple-500"
+                    >
+                      {availableVoices.length === 0 ? (
+                        <option value="">No voices for this combination</option>
+                      ) : (
+                        availableVoices.map((v) => (
+                          <option key={v.id} value={v.id}>
+                            {v.label}
+                          </option>
+                        ))
+                      )}
+                    </select>
+                    {draft.tts_provider === "deepgram" &&
+                      !draft.language.startsWith("en") && (
+                        <p className="text-[11px] text-amber-400 mt-1">
+                          Deepgram voices are English-only. For native-sounding{" "}
+                          {draft.language} voice, switch to ElevenLabs or
+                          Cartesia.
+                        </p>
+                      )}
+                  </Field>
+
+                  <Field
+                    label={
+                      <span className="flex items-center gap-1.5">
+                        <Gauge className="w-3.5 h-3.5" /> Speaking speed:{" "}
+                        {draft.speaking_speed.toFixed(2)}×
+                      </span>
+                    }
+                  >
+                    <input
+                      type="range"
+                      min={0.8}
+                      max={1.3}
+                      step={0.05}
+                      value={draft.speaking_speed}
+                      onChange={(e) =>
+                        setDraft({
+                          ...draft,
+                          speaking_speed: parseFloat(e.target.value),
+                        })
+                      }
+                      className="w-full accent-purple-500"
+                    />
+                    <div className="flex justify-between text-[10px] text-gray-500">
+                      <span>slower</span>
+                      <span>natural</span>
+                      <span>faster</span>
+                    </div>
+                  </Field>
+                </>
+              )}
+
+              {tab === "behavior" && (
+                <>
+                  <Field label="Filler words">
+                    <ToggleRow
+                      checked={draft.fillers_enabled}
+                      onChange={(b) =>
+                        setDraft({ ...draft, fillers_enabled: b })
+                      }
+                      title="Use fillers like 'mm-hmm' and 'okay' while thinking"
+                      hint="Eliminates dead air while the language model is generating a reply. Sounds dramatically more human."
+                    />
+                  </Field>
+
+                  <Field label="Interruption sensitivity">
+                    <div className="grid grid-cols-3 gap-2">
+                      {(["low", "medium", "high"] as const).map((s) => {
+                        const active = draft.interruption_sensitivity === s;
+                        return (
+                          <button
+                            key={s}
+                            onClick={() =>
+                              setDraft({
+                                ...draft,
+                                interruption_sensitivity: s,
+                              })
+                            }
+                            className={`px-3 py-2 rounded-lg border text-xs font-medium capitalize transition ${
+                              active
+                                ? "bg-purple-600/20 border-purple-500/40 text-purple-200"
+                                : "bg-white/5 border-white/10 text-gray-300 hover:bg-white/10"
+                            }`}
+                          >
+                            {s}
+                            <div className="text-[10px] text-gray-500 mt-0.5 normal-case font-normal">
+                              {s === "low" && "agent waits longer"}
+                              {s === "medium" && "balanced"}
+                              {s === "high" && "snappy, quick to respond"}
+                            </div>
+                          </button>
+                        );
+                      })}
+                    </div>
+                    <p className="text-[11px] text-gray-500 mt-1.5">
+                      Higher sensitivity makes the agent stop and listen
+                      faster when you start speaking — also makes it cut in
+                      faster after you finish.
+                    </p>
+                  </Field>
+
+                  <Field label="Wait for caller to speak first">
+                    <ToggleRow
+                      checked={draft.wait_for_user_first}
+                      onChange={(b) =>
+                        setDraft({ ...draft, wait_for_user_first: b })
+                      }
+                      title="Don't auto-greet — wait for the caller to talk"
+                      hint="Useful for inbound flows where the caller initiates the conversation."
+                    />
+                  </Field>
+                </>
+              )}
 
               <div className="pt-3 border-t border-white/5 flex items-center gap-3">
                 <button
@@ -286,7 +536,13 @@ export default function AgentsPage() {
   );
 }
 
-function Field({ label, children }: { label: string; children: React.ReactNode }) {
+function Field({
+  label,
+  children,
+}: {
+  label: React.ReactNode;
+  children: React.ReactNode;
+}) {
   return (
     <div className="space-y-1.5">
       <label className="text-xs uppercase tracking-wide text-gray-500 font-medium">
@@ -294,5 +550,58 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
       </label>
       {children}
     </div>
+  );
+}
+
+function TabBtn({
+  active,
+  onClick,
+  icon,
+  label,
+}: {
+  active: boolean;
+  onClick: () => void;
+  icon: React.ReactNode;
+  label: string;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      className={`px-4 py-2.5 text-sm font-medium border-b-2 transition flex items-center gap-2 -mb-px ${
+        active
+          ? "border-purple-500 text-white"
+          : "border-transparent text-gray-400 hover:text-white"
+      }`}
+    >
+      {icon}
+      {label}
+    </button>
+  );
+}
+
+function ToggleRow({
+  checked,
+  onChange,
+  title,
+  hint,
+}: {
+  checked: boolean;
+  onChange: (b: boolean) => void;
+  title: string;
+  hint?: string;
+}) {
+  return (
+    <label className="flex items-start gap-3 px-3 py-2.5 rounded-lg bg-white/5 border border-white/10 cursor-pointer hover:bg-white/10 transition">
+      <input
+        type="checkbox"
+        checked={checked}
+        onChange={(e) => onChange(e.target.checked)}
+        className="w-4 h-4 mt-0.5 accent-purple-500"
+      />
+      <div className="flex-1">
+        <div className="text-sm text-gray-200">{title}</div>
+        {hint && <div className="text-[11px] text-gray-500 mt-0.5">{hint}</div>}
+      </div>
+    </label>
   );
 }

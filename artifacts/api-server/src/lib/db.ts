@@ -1,15 +1,28 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { randomBytes } from "node:crypto";
+import {
+  DEFAULT_LANGUAGE_ID,
+  DEFAULT_VOICE_ID,
+  getLanguage,
+  type TtsProvider,
+} from "./voices";
+
+export type InterruptionSensitivity = "low" | "medium" | "high";
 
 export type Agent = {
   id: string;
   name: string;
   system_prompt: string;
   greeting: string;
+  tts_provider: TtsProvider;
   voice_id: string;
   language: string;
+  speaking_speed: number; // 0.8 - 1.3
+  fillers_enabled: boolean;
+  interruption_sensitivity: InterruptionSensitivity;
   wait_for_user_first: boolean;
+  template_id: string | null;
   created_at: string;
   updated_at: string;
 };
@@ -53,19 +66,55 @@ export function newId(prefix: string): string {
   return `${prefix}_${randomBytes(8).toString("hex")}`;
 }
 
-function defaultAgent(): Agent {
+function withDefaults(input: Partial<Agent> & { name: string }): Omit<Agent, "id" | "created_at" | "updated_at"> {
   return {
-    id: newId("agt"),
+    name: input.name,
+    system_prompt: input.system_prompt ?? "",
+    greeting: input.greeting ?? "",
+    tts_provider: input.tts_provider ?? "deepgram",
+    voice_id: input.voice_id ?? DEFAULT_VOICE_ID,
+    language: input.language ?? DEFAULT_LANGUAGE_ID,
+    speaking_speed: typeof input.speaking_speed === "number" ? input.speaking_speed : 1.0,
+    fillers_enabled: input.fillers_enabled ?? true,
+    interruption_sensitivity: input.interruption_sensitivity ?? "medium",
+    wait_for_user_first: Boolean(input.wait_for_user_first),
+    template_id: input.template_id ?? null,
+  };
+}
+
+function defaultAgent(): Agent {
+  const base = withDefaults({
     name: "Friendly Assistant",
     system_prompt:
-      "You are a friendly, concise AI voice assistant calling on behalf of Rapid X AI. Keep replies short (1-2 sentences). Politely confirm if the caller can hear you when they're silent. End the call warmly when they say goodbye.",
+      "You are a friendly, concise voice assistant calling on behalf of Rapid X AI. Keep replies short (1-2 sentences). Use contractions and a casual, human tone. End the call warmly when the caller says goodbye.",
     greeting:
-      "Hi! Thanks for picking up — I'm an AI assistant calling from Rapid X. How are you doing today?",
-    voice_id: "aura-asteria-en",
-    language: "en",
-    wait_for_user_first: false,
+      "Hey, thanks for picking up — I'm calling from Rapid X. How are you doing today?",
+  });
+  return {
+    id: newId("agt"),
+    ...base,
     created_at: nowIso(),
     updated_at: nowIso(),
+  };
+}
+
+// Migrate older agent records that don't have all fields yet.
+function migrateAgent(a: any): Agent {
+  return {
+    id: a.id,
+    name: a.name ?? "Untitled Agent",
+    system_prompt: a.system_prompt ?? "",
+    greeting: a.greeting ?? "",
+    tts_provider: (a.tts_provider as TtsProvider) ?? "deepgram",
+    voice_id: a.voice_id ?? DEFAULT_VOICE_ID,
+    language: a.language ?? DEFAULT_LANGUAGE_ID,
+    speaking_speed: typeof a.speaking_speed === "number" ? a.speaking_speed : 1.0,
+    fillers_enabled: a.fillers_enabled ?? true,
+    interruption_sensitivity: (a.interruption_sensitivity as InterruptionSensitivity) ?? "medium",
+    wait_for_user_first: Boolean(a.wait_for_user_first),
+    template_id: a.template_id ?? null,
+    created_at: a.created_at ?? nowIso(),
+    updated_at: a.updated_at ?? nowIso(),
   };
 }
 
@@ -75,7 +124,7 @@ async function load(): Promise<Store> {
     const raw = await fs.readFile(STORE_PATH, "utf8");
     const parsed = JSON.parse(raw) as Store;
     cache = {
-      agents: Array.isArray(parsed.agents) ? parsed.agents : [],
+      agents: Array.isArray(parsed.agents) ? parsed.agents.map(migrateAgent) : [],
       calls: Array.isArray(parsed.calls) ? parsed.calls : [],
     };
   } catch {
@@ -83,6 +132,9 @@ async function load(): Promise<Store> {
   }
   if (cache.agents.length === 0) {
     cache.agents.push(defaultAgent());
+    await persist();
+  } else {
+    // Persist any migrations.
     await persist();
   }
   return cache;
@@ -119,12 +171,7 @@ export async function createAgent(
   const s = await load();
   const a: Agent = {
     id: newId("agt"),
-    name: input.name,
-    system_prompt: input.system_prompt ?? "",
-    greeting: input.greeting ?? "",
-    voice_id: input.voice_id ?? "aura-asteria-en",
-    language: input.language ?? "en",
-    wait_for_user_first: Boolean(input.wait_for_user_first),
+    ...withDefaults(input),
     created_at: nowIso(),
     updated_at: nowIso(),
   };
@@ -140,7 +187,7 @@ export async function updateAgent(
   const s = await load();
   const idx = s.agents.findIndex((a) => a.id === id);
   if (idx === -1) return null;
-  const updated = {
+  const updated: Agent = {
     ...s.agents[idx]!,
     ...patch,
     id,
@@ -221,4 +268,35 @@ export async function appendTranscript(
   s.calls[idx]!.transcript.push(turn);
   await persist();
   return s.calls[idx]!;
+}
+
+// Build the JSON metadata blob attached to a LiveKit room so the worker
+// knows exactly how to behave for this call.
+export function buildAgentMetadata(
+  agent: Agent,
+  extra: { mode?: string; phone_number?: string; per_call_prompt?: string } = {},
+): string {
+  const combinedPrompt = [agent.system_prompt, extra.per_call_prompt]
+    .filter((p) => p && String(p).trim())
+    .join("\n\n## Per-call context\n");
+  // Resolve catalog-driven STT model/language so the worker doesn't have to
+  // re-derive them — single source of truth lives in voices.ts.
+  const lang = getLanguage(agent.language);
+  return JSON.stringify({
+    ...(extra.mode ? { mode: extra.mode } : {}),
+    ...(extra.phone_number ? { phone_number: extra.phone_number } : {}),
+    agent_id: agent.id,
+    agent_name: agent.name,
+    user_prompt: combinedPrompt,
+    greeting: agent.greeting,
+    tts_provider: agent.tts_provider,
+    voice_id: agent.voice_id,
+    language: agent.language,
+    stt_model: lang?.stt_model ?? "nova-3",
+    stt_language: lang?.stt_language ?? agent.language,
+    speaking_speed: agent.speaking_speed,
+    fillers_enabled: agent.fillers_enabled,
+    interruption_sensitivity: agent.interruption_sensitivity,
+    wait_for_user_first: agent.wait_for_user_first,
+  });
 }

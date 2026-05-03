@@ -1,14 +1,20 @@
 import { useQuery } from "@tanstack/react-query";
 import { apiGet } from "./api";
+import type { Catalog, TtsProvider } from "./voices";
 
 export type Agent = {
   id: string;
   name: string;
   system_prompt: string;
   greeting: string;
+  tts_provider: TtsProvider;
   voice_id: string;
   language: string;
+  speaking_speed: number;
+  fillers_enabled: boolean;
+  interruption_sensitivity: "low" | "medium" | "high";
   wait_for_user_first: boolean;
+  template_id: string | null;
   created_at: string;
   updated_at: string;
 };
@@ -31,6 +37,14 @@ export function useAgents() {
   return useQuery({
     queryKey: ["agents"],
     queryFn: () => apiGet<{ agents: Agent[] }>("/agents"),
+  });
+}
+
+export function useCatalog() {
+  return useQuery({
+    queryKey: ["agents", "catalog"],
+    queryFn: () => apiGet<Catalog>("/agents/catalog"),
+    staleTime: 5 * 60 * 1000,
   });
 }
 
