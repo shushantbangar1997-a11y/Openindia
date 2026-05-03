@@ -531,18 +531,14 @@ async def entrypoint(ctx: agents.JobContext):
             except Exception as e:
                 logger.debug(f"filler hook failed: {e}")
 
-    # Explicit barge-in: the moment the user starts speaking, stop the agent
-    # immediately. AgentSession also handles this internally via VAD when
-    # allow_interruptions=True, but calling .interrupt() guarantees instant cut.
+    # Cancel any pending filler the moment the user starts speaking.
+    # We do NOT call session.interrupt() here — AgentSession handles barge-in
+    # automatically when allow_interruptions=True. Calling interrupt() manually
+    # would cancel any in-progress LLM generation, leaving only the filler
+    # audible and preventing real responses from ever reaching the caller.
     @session.on("user_started_speaking")
     def _on_user_speak(_ev=None) -> None:
         _cancel_pending_filler()
-        try:
-            res = session.interrupt()
-            if asyncio.iscoroutine(res):
-                asyncio.create_task(res)
-        except Exception as e:
-            logger.debug(f"interrupt failed: {e}")
 
     # Latency HUD: push STT/LLM/TTS timing events down a LiveKit data
     # channel (topic="latency") so the browser test modal can render a HUD.
