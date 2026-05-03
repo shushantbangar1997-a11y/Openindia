@@ -26,7 +26,7 @@ import {
   TestTube2,
   Radio,
 } from "lucide-react";
-import { type Agent, useAgents, useCatalog } from "@/lib/agents";
+import { type Agent, useAgents, useCatalog, useSettings, useElevenLabsVoices } from "@/lib/agents";
 import { apiSend, apiUrl } from "@/lib/api";
 import {
   DEFAULT_LANGUAGE_ID,
@@ -127,10 +127,23 @@ export default function AgentsPage() {
     setDraft((d) => ({ ...d, template_id: t.id === "blank" ? null : t.id, system_prompt: t.system_prompt, greeting: t.greeting }));
   };
 
-  const availableVoices = useMemo(
-    () => voicesFor(catalog, draft.tts_provider, draft.language),
-    [catalog, draft.tts_provider, draft.language],
+  const { data: settings } = useSettings();
+  const elevenLabsKeySet = Boolean(
+    settings?.elevenlabs_api_key || draft.provider_api_keys?.elevenlabs,
   );
+  const agentElevenKey = draft.provider_api_keys?.elevenlabs;
+  const { data: elevenLabsVoicesData, isLoading: elevenLabsLoading, error: elevenLabsError } = useElevenLabsVoices(
+    draft.tts_provider === "elevenlabs" && elevenLabsKeySet,
+    agentElevenKey,
+  );
+
+  const availableVoices = useMemo(() => {
+    if (draft.tts_provider === "elevenlabs" && elevenLabsVoicesData?.voices?.length) {
+      return elevenLabsVoicesData.voices;
+    }
+    return voicesFor(catalog, draft.tts_provider, draft.language);
+  }, [catalog, draft.tts_provider, draft.language, elevenLabsVoicesData]);
+
   useEffect(() => {
     if (availableVoices.length === 0) return;
     if (!availableVoices.find((v) => v.id === draft.voice_id)) {
@@ -414,18 +427,30 @@ export default function AgentsPage() {
                       <div className="mt-3">
                         <SfField label="Voice">
                           <div className="flex gap-2">
-                            <SfSelect
-                              value={draft.voice_id}
-                              onChange={(v) => setDraft({ ...draft, voice_id: v })}
-                            >
-                              {availableVoices.length === 0 ? (
-                                <option value="">No voices for this combination</option>
-                              ) : (
-                                availableVoices.map((v) => (
-                                  <option key={v.id} value={v.id}>{v.label}</option>
-                                ))
-                              )}
-                            </SfSelect>
+                            {elevenLabsLoading && draft.tts_provider === "elevenlabs" ? (
+                              <div className="flex-1 flex items-center gap-2 px-3.5 py-2.5 bg-white border border-gray-200 rounded-xl text-sm text-gray-400">
+                                <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                                Loading voices from ElevenLabs…
+                              </div>
+                            ) : elevenLabsError && draft.tts_provider === "elevenlabs" ? (
+                              <div className="flex-1 flex items-center gap-2 px-3.5 py-2.5 bg-red-50 border border-red-200 rounded-xl text-sm text-red-600">
+                                <AlertCircle className="w-3.5 h-3.5 shrink-0" />
+                                {(elevenLabsError as Error).message || "Failed to load ElevenLabs voices — check your API key."}
+                              </div>
+                            ) : (
+                              <SfSelect
+                                value={draft.voice_id}
+                                onChange={(v) => setDraft({ ...draft, voice_id: v })}
+                              >
+                                {availableVoices.length === 0 ? (
+                                  <option value="">No voices for this combination</option>
+                                ) : (
+                                  availableVoices.map((v) => (
+                                    <option key={v.id} value={v.id}>{v.label}</option>
+                                  ))
+                                )}
+                              </SfSelect>
+                            )}
                             <VoicePreviewButton
                               voiceId={draft.voice_id}
                               provider={draft.tts_provider}

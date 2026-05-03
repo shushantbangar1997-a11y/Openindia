@@ -13,6 +13,7 @@ import {
 import Home from "@/pages/Home";
 import Agents from "@/pages/Agents";
 import Calls from "@/pages/Calls";
+import SettingsPage from "@/pages/Settings";
 import NotFound from "@/pages/not-found";
 
 const queryClient = new QueryClient({
@@ -76,8 +77,12 @@ function Sidebar() {
       {/* Bottom */}
       <div className="px-2.5 py-4 border-t border-white/[0.06]">
         <Link href="/settings">
-          <div className="flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm text-white/40 hover:text-white/70 hover:bg-white/[0.04] cursor-pointer transition-all">
-            <Settings className="w-4 h-4" />
+          <div className={`flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm cursor-pointer transition-all ${
+            path === "/settings"
+              ? "bg-violet-600/20 text-white border border-violet-500/20"
+              : "text-white/40 hover:text-white/70 hover:bg-white/[0.04]"
+          }`}>
+            <Settings className={`w-4 h-4 ${path === "/settings" ? "text-violet-400" : ""}`} />
             Settings
           </div>
         </Link>
@@ -115,6 +120,7 @@ function Router() {
         <Route path="/" component={Home} />
         <Route path="/agents" component={Agents} />
         <Route path="/calls" component={Calls} />
+        <Route path="/settings" component={SettingsPage} />
         <Route component={NotFound} />
       </Switch>
     </Layout>

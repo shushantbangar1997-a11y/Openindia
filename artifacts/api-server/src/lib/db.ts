@@ -52,9 +52,15 @@ export type CallRecord = {
   transcript: TranscriptTurn[];
 };
 
+export type GlobalSettings = {
+  elevenlabs_api_key?: string;
+  cartesia_api_key?: string;
+};
+
 type Store = {
   agents: Agent[];
   calls: CallRecord[];
+  settings?: GlobalSettings;
 };
 
 const DATA_DIR = path.resolve(process.cwd(), "data");
@@ -186,6 +192,20 @@ async function persist(): Promise<void> {
     })
     .catch(() => {});
   await writeChain;
+}
+
+// ── Global Settings ─────────────────────────────────────
+export async function getSettings(): Promise<GlobalSettings> {
+  const s = await load();
+  return s.settings ?? {};
+}
+
+export async function updateSettings(patch: Partial<GlobalSettings>): Promise<GlobalSettings> {
+  const s = await load();
+  s.settings = { ...(s.settings ?? {}), ...patch };
+  cache = s;
+  await persist();
+  return s.settings;
 }
 
 // ── Agents ──────────────────────────────────────────────

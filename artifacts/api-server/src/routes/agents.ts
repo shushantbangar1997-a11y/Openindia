@@ -6,6 +6,7 @@ import {
   listAgents,
   redactAgent,
   updateAgent,
+  getSettings,
 } from "../lib/db";
 import { LANGUAGES, VOICES } from "../lib/voices";
 import { PROMPT_TEMPLATES } from "../lib/prompt-templates";
@@ -171,12 +172,13 @@ const sampleVoice: RequestHandler = async (req, res) => {
   }
   // Per-agent stored keys take precedence over global env vars so previews
   // reflect the *exact* provider/voice the user just pasted a key for.
-  let elevenOverride: string | undefined;
-  let cartesiaOverride: string | undefined;
+  const globalSettings = await getSettings();
+  let elevenOverride: string | undefined = globalSettings.elevenlabs_api_key;
+  let cartesiaOverride: string | undefined = globalSettings.cartesia_api_key;
   if (agent_id) {
     const a = await getAgent(String(agent_id));
-    elevenOverride = a?.provider_api_keys?.elevenlabs;
-    cartesiaOverride = a?.provider_api_keys?.cartesia;
+    if (a?.provider_api_keys?.elevenlabs) elevenOverride = a.provider_api_keys.elevenlabs;
+    if (a?.provider_api_keys?.cartesia) cartesiaOverride = a.provider_api_keys.cartesia;
   }
   let buf: Buffer | null = null;
   try {
@@ -225,8 +227,9 @@ const remove: RequestHandler = async (req, res) => {
 // Catalog endpoints — let the frontend pull voices/languages/templates
 // from a single source of truth that also drives the worker.
 const catalog: RequestHandler = async (_req, res) => {
-  const elevenlabsAvailable = Boolean(process.env["ELEVENLABS_API_KEY"]);
-  const cartesiaAvailable = Boolean(process.env["CARTESIA_API_KEY"]);
+  const settings = await getSettings();
+  const elevenlabsAvailable = Boolean(settings.elevenlabs_api_key || process.env["ELEVENLABS_API_KEY"]);
+  const cartesiaAvailable = Boolean(settings.cartesia_api_key || process.env["CARTESIA_API_KEY"]);
   res.json({
     voices: VOICES,
     languages: LANGUAGES,
@@ -289,7 +292,13 @@ const internalKeys: RequestHandler = async (req, res) => {
     res.status(404).json({ error: "Agent not found" });
     return;
   }
-  res.json({ provider_api_keys: a.provider_api_keys ?? {} });
+  // Merge global settings keys as fallback for agent-level keys.
+  const globalSettings = await getSettings();
+  const merged = {
+    elevenlabs: a.provider_api_keys?.elevenlabs || globalSettings.elevenlabs_api_key,
+    cartesia: a.provider_api_keys?.cartesia || globalSettings.cartesia_api_key,
+  };
+  res.json({ provider_api_keys: merged });
 };
 router.get("/internal/agents/:id/keys", internalKeys);
 

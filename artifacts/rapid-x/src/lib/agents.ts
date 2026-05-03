@@ -1,6 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import { apiGet } from "./api";
-import type { Catalog, TtsProvider } from "./voices";
+import type { Catalog, TtsProvider, Voice } from "./voices";
 
 export type Agent = {
   id: string;
@@ -36,10 +36,39 @@ export type CallRecord = {
   transcript: { role: "user" | "assistant"; text: string; ts: string }[];
 };
 
+export type GlobalSettings = {
+  elevenlabs_api_key: string | null;
+  cartesia_api_key: string | null;
+};
+
 export function useAgents() {
   return useQuery({
     queryKey: ["agents"],
     queryFn: () => apiGet<{ agents: Agent[] }>("/agents"),
+  });
+}
+
+export function useSettings() {
+  return useQuery({
+    queryKey: ["settings"],
+    queryFn: () => apiGet<{ settings: GlobalSettings }>("/settings").then((d) => d.settings),
+    staleTime: 30_000,
+  });
+}
+
+export function useElevenLabsVoices(enabled: boolean, agentElevenLabsKey?: string) {
+  return useQuery({
+    queryKey: ["elevenlabs-voices", agentElevenLabsKey ?? "global"],
+    enabled,
+    queryFn: async () => {
+      const headers: Record<string, string> = {};
+      if (agentElevenLabsKey && agentElevenLabsKey !== "***") {
+        headers["x-agent-elevenlabs-key"] = agentElevenLabsKey;
+      }
+      return apiGet<{ voices: Voice[] }>("/elevenlabs/voices", Object.keys(headers).length ? headers : undefined);
+    },
+    staleTime: 2 * 60 * 1000,
+    retry: false,
   });
 }
 

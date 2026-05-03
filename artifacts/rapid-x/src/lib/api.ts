@@ -5,8 +5,8 @@ export function apiUrl(path: string): string {
   return `${BASE}api/${clean}`;
 }
 
-export async function apiGet<T>(path: string): Promise<T> {
-  const r = await fetch(apiUrl(path));
+export async function apiGet<T>(path: string, headers?: Record<string, string>): Promise<T> {
+  const r = await fetch(apiUrl(path), headers ? { headers } : undefined);
   if (!r.ok) throw new Error((await r.json()).error || r.statusText);
   return (await r.json()) as T;
 }

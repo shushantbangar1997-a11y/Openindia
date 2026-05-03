@@ -5,6 +5,8 @@ import queueRouter from "./queue";
 import agentsRouter from "./agents";
 import callsRouter from "./calls";
 import tokenRouter from "./token";
+import settingsRouter from "./settings";
+import elevenLabsRouter from "./elevenlabs";
 
 const router: IRouter = Router();
 
@@ -14,5 +16,7 @@ router.use(queueRouter);
 router.use(agentsRouter);
 router.use(callsRouter);
 router.use(tokenRouter);
+router.use(settingsRouter);
+router.use(elevenLabsRouter);
 
 export default router;
