@@ -1,4 +1,4 @@
-modules = ["nodejs-24"]
+modules = ["nodejs-24", "python-3.11"]
 
 [deployment]
 router = "application"
@@ -10,6 +10,26 @@ env = { "CI" = "true" }
 
 [workflows]
 runButton = "Project"
+
+[[workflows.workflow]]
+name = "Project"
+mode = "parallel"
+author = "agent"
+
+[[workflows.workflow.tasks]]
+task = "workflow.run"
+args = "Rapid X Agent"
+
+[[workflows.workflow]]
+name = "Rapid X Agent"
+author = "agent"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "cd services/rapid-x-agent && python agent.py start"
+
+[workflows.workflow.metadata]
+outputType = "console"
 
 [agent]
 stack = "PNPM_WORKSPACE"
@@ -32,9 +52,16 @@ localPort = 8082
 externalPort = 3000
 
 [[ports]]
+localPort = 8765
+externalPort = 3002
+
+[[ports]]
 localPort = 22895
 externalPort = 3001
 
 [[ports]]
 localPort = 23045
 externalPort = 80
+
+[nix]
+channel = "stable-25_05"
