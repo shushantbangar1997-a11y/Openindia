@@ -1,0 +1,5 @@
+# Runtime data store contains user-pasted provider API keys (ElevenLabs,
+# Cartesia). NEVER commit this file — it would leak secrets into git.
+# The empty `data/store.seed.json` is committed instead and used to
+# bootstrap a fresh checkout.
+data/store.runtime.json

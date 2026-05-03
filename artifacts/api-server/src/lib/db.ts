@@ -58,7 +58,11 @@ type Store = {
 };
 
 const DATA_DIR = path.resolve(process.cwd(), "data");
-const STORE_PATH = path.join(DATA_DIR, "store.json");
+// Runtime store contains user-pasted provider API keys, so the path is
+// gitignored. The committed `store.seed.json` is an empty seed used only
+// to bootstrap a fresh checkout.
+const STORE_PATH = path.join(DATA_DIR, "store.runtime.json");
+const SEED_PATH = path.join(DATA_DIR, "store.seed.json");
 
 let cache: Store | null = null;
 let writeChain: Promise<void> = Promise.resolve();
@@ -137,14 +141,29 @@ function migrateAgent(a: any): Agent {
 
 async function load(): Promise<Store> {
   if (cache) return cache;
-  try {
-    const raw = await fs.readFile(STORE_PATH, "utf8");
-    const parsed = JSON.parse(raw) as Store;
-    cache = {
-      agents: Array.isArray(parsed.agents) ? parsed.agents.map(migrateAgent) : [],
-      calls: Array.isArray(parsed.calls) ? parsed.calls : [],
-    };
-  } catch {
+  // Prefer the runtime (gitignored) store; fall back to the committed seed
+  // on first boot. This keeps user-pasted provider keys out of git forever
+  // even though the seed file remains tracked.
+  let raw: string | null = null;
+  for (const p of [STORE_PATH, SEED_PATH]) {
+    try {
+      raw = await fs.readFile(p, "utf8");
+      break;
+    } catch {
+      /* try next */
+    }
+  }
+  if (raw) {
+    try {
+      const parsed = JSON.parse(raw) as Store;
+      cache = {
+        agents: Array.isArray(parsed.agents) ? parsed.agents.map(migrateAgent) : [],
+        calls: Array.isArray(parsed.calls) ? parsed.calls : [],
+      };
+    } catch {
+      cache = { agents: [], calls: [] };
+    }
+  } else {
     cache = { agents: [], calls: [] };
   }
   if (cache.agents.length === 0) {
