@@ -14,6 +14,7 @@ export type Agent = {
   speaking_speed: number;
   fillers_enabled: boolean;
   custom_fillers: string[];
+  provider_api_keys: { elevenlabs?: string; cartesia?: string };
   interruption_sensitivity: "low" | "medium" | "high";
   wait_for_user_first: boolean;
   template_id: string | null;

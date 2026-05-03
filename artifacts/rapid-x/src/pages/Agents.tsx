@@ -43,6 +43,7 @@ const EMPTY: Draft = {
   speaking_speed: 1.0,
   fillers_enabled: true,
   custom_fillers: [],
+  provider_api_keys: {},
   interruption_sensitivity: "medium",
   wait_for_user_first: false,
   template_id: null,
@@ -369,20 +370,36 @@ export default function AgentsPage() {
                     </Field>
                   </div>
 
-                  {!providerInfo?.available && (
-                    <ApiKeyOnboarding
-                      provider={draft.tts_provider}
-                      secretName={
-                        draft.tts_provider === "elevenlabs"
-                          ? "ELEVENLABS_API_KEY"
-                          : "CARTESIA_API_KEY"
-                      }
-                      docsUrl={
-                        draft.tts_provider === "elevenlabs"
-                          ? "https://elevenlabs.io/app/settings/api-keys"
-                          : "https://play.cartesia.ai/keys"
-                      }
-                    />
+                  {!providerInfo?.available &&
+                    !(
+                      draft.provider_api_keys &&
+                      draft.provider_api_keys[
+                        draft.tts_provider as "elevenlabs" | "cartesia"
+                      ]
+                    ) && (
+                      <ApiKeyOnboarding
+                        provider={draft.tts_provider as "elevenlabs" | "cartesia"}
+                        agentId={selectedId}
+                        onSaved={(provider, masked) => {
+                          setDraft({
+                            ...draft,
+                            provider_api_keys: {
+                              ...draft.provider_api_keys,
+                              [provider]: masked,
+                            },
+                          });
+                          qc.invalidateQueries({ queryKey: ["agents"] });
+                        }}
+                      />
+                    )}
+                  {draft.provider_api_keys?.[
+                    draft.tts_provider as "elevenlabs" | "cartesia"
+                  ] && (
+                    <div className="px-3 py-2 rounded-lg bg-emerald-500/10 border border-emerald-500/30 text-emerald-200 text-xs flex items-center gap-2">
+                      <CheckCircle className="w-3.5 h-3.5" />
+                      <b className="capitalize">{draft.tts_provider}</b> key
+                      saved on this agent — calls will use it directly.
+                    </div>
                   )}
 
                   <Field label="Auto-detect language">
@@ -679,13 +696,22 @@ function VoicePreviewButton({
 
 function ApiKeyOnboarding({
   provider,
-  secretName,
-  docsUrl,
+  agentId,
+  onSaved,
 }: {
-  provider: string;
-  secretName: string;
-  docsUrl: string;
+  provider: "elevenlabs" | "cartesia";
+  agentId: string | null;
+  onSaved: (provider: "elevenlabs" | "cartesia", masked: string) => void;
 }) {
+  const docsUrl =
+    provider === "elevenlabs"
+      ? "https://elevenlabs.io/app/settings/api-keys"
+      : "https://play.cartesia.ai/keys";
+  const secretName =
+    provider === "elevenlabs" ? "ELEVENLABS_API_KEY" : "CARTESIA_API_KEY";
+  const [pasted, setPasted] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
   const [copied, setCopied] = useState(false);
   const onCopy = async () => {
     try {
@@ -694,49 +720,102 @@ function ApiKeyOnboarding({
       setTimeout(() => setCopied(false), 1500);
     } catch {}
   };
+  const onSave = async () => {
+    if (!agentId) {
+      setError("Save the agent first, then paste the key.");
+      return;
+    }
+    if (pasted.trim().length < 10) {
+      setError("That doesn't look like a valid key.");
+      return;
+    }
+    setSaving(true);
+    setError("");
+    try {
+      await apiSend(`/agents/${agentId}/provider-key`, "POST", {
+        provider,
+        api_key: pasted.trim(),
+      });
+      onSaved(provider, "***");
+      setPasted("");
+    } catch (e: any) {
+      setError(e?.message || "Failed to save key");
+    } finally {
+      setSaving(false);
+    }
+  };
   return (
-    <div className="p-3 rounded-lg bg-amber-500/10 border border-amber-500/30 text-amber-100 text-xs space-y-2">
+    <div className="p-3 rounded-lg bg-amber-500/10 border border-amber-500/30 text-amber-100 text-xs space-y-2.5">
       <div className="flex items-start gap-2">
         <AlertCircle className="w-4 h-4 mt-0.5 flex-shrink-0" />
         <div>
-          <b className="capitalize">{provider}</b> needs an API key. Until
-          you add one, calls will use Deepgram's free voices.
+          <b className="capitalize">{provider}</b> needs an API key. Paste it
+          below to save it on this agent — or set it as a global env var.
         </div>
       </div>
-      <ol className="ml-6 list-decimal space-y-0.5 text-amber-200/90">
-        <li>
-          Get a key at{" "}
-          <a
-            href={docsUrl}
-            target="_blank"
-            rel="noreferrer"
-            className="underline hover:text-amber-50"
-          >
-            {provider === "elevenlabs" ? "elevenlabs.io" : "play.cartesia.ai"}
-          </a>
-          .
-        </li>
-        <li>Open the Secrets pane in Replit and add the key.</li>
-        <li>Restart the "Rapid X Agent" workflow.</li>
-      </ol>
-      <div className="flex items-center gap-2 pt-1">
-        <code className="px-2 py-1 rounded bg-black/40 text-amber-100">
-          {secretName}
-        </code>
+      <div className="flex gap-2">
+        <input
+          type="password"
+          value={pasted}
+          onChange={(e) => setPasted(e.target.value)}
+          placeholder={`Paste your ${provider} API key`}
+          className="flex-1 px-3 py-2 bg-black/30 border border-amber-500/30 rounded-md text-amber-50 text-xs font-mono placeholder:text-amber-300/40 focus:outline-none focus:ring-1 focus:ring-amber-400"
+        />
         <button
           type="button"
-          onClick={onCopy}
-          className="p-1.5 rounded bg-black/30 hover:bg-black/50 text-amber-100"
-          aria-label="Copy secret name"
+          onClick={onSave}
+          disabled={saving || !pasted}
+          className="px-3 py-2 rounded-md bg-amber-500 hover:bg-amber-400 text-black font-semibold text-xs disabled:opacity-50 flex items-center gap-1.5"
         >
-          {copied ? (
-            <CheckCircle className="w-3.5 h-3.5" />
+          {saving ? (
+            <Loader2 className="w-3.5 h-3.5 animate-spin" />
           ) : (
-            <Copy className="w-3.5 h-3.5" />
+            <KeyRound className="w-3.5 h-3.5" />
           )}
+          Save key
         </button>
-        <KeyRound className="w-3.5 h-3.5 ml-auto opacity-60" />
       </div>
+      {error && <div className="text-red-300">{error}</div>}
+      <details className="text-amber-200/80">
+        <summary className="cursor-pointer hover:text-amber-50">
+          Or use a global env var instead
+        </summary>
+        <ol className="ml-6 mt-1 list-decimal space-y-0.5">
+          <li>
+            Get a key at{" "}
+            <a
+              href={docsUrl}
+              target="_blank"
+              rel="noreferrer"
+              className="underline hover:text-amber-50"
+            >
+              {provider === "elevenlabs"
+                ? "elevenlabs.io"
+                : "play.cartesia.ai"}
+            </a>
+            .
+          </li>
+          <li>Open the Secrets pane in Replit and add the key.</li>
+          <li>Restart the "Rapid X Agent" workflow.</li>
+        </ol>
+        <div className="flex items-center gap-2 pt-1.5">
+          <code className="px-2 py-1 rounded bg-black/40 text-amber-100">
+            {secretName}
+          </code>
+          <button
+            type="button"
+            onClick={onCopy}
+            className="p-1.5 rounded bg-black/30 hover:bg-black/50 text-amber-100"
+            aria-label="Copy secret name"
+          >
+            {copied ? (
+              <CheckCircle className="w-3.5 h-3.5" />
+            ) : (
+              <Copy className="w-3.5 h-3.5" />
+            )}
+          </button>
+        </div>
+      </details>
     </div>
   );
 }

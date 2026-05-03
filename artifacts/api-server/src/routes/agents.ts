@@ -4,6 +4,7 @@ import {
   deleteAgent,
   getAgent,
   listAgents,
+  redactAgent,
   updateAgent,
 } from "../lib/db";
 import { LANGUAGES, VOICES } from "../lib/voices";
@@ -13,7 +14,7 @@ const router: IRouter = Router();
 
 const list: RequestHandler = async (_req, res) => {
   const agents = await listAgents();
-  res.json({ agents });
+  res.json({ agents: agents.map(redactAgent) });
 };
 
 const getOne: RequestHandler = async (req, res) => {
@@ -22,7 +23,7 @@ const getOne: RequestHandler = async (req, res) => {
     res.status(404).json({ error: "Agent not found" });
     return;
   }
-  res.json({ agent: a });
+  res.json({ agent: redactAgent(a) });
 };
 
 const create: RequestHandler = async (req, res) => {
@@ -32,11 +33,42 @@ const create: RequestHandler = async (req, res) => {
     return;
   }
   const a = await createAgent({ ...sanitize(body), name: body.name.trim() });
-  res.status(201).json({ agent: a });
+  res.status(201).json({ agent: redactAgent(a) });
+};
+
+// One-time provider-key paste flow. Lets users paste a key in the editor
+// without juggling Replit Secrets. Stored on the agent record (file store
+// is local to the user's environment) and redacted in all GET responses.
+const setProviderKey: RequestHandler = async (req, res) => {
+  const id = String(req.params["id"]);
+  const { provider, api_key } = (req.body ?? {}) as {
+    provider?: string;
+    api_key?: string;
+  };
+  if (!provider || !["elevenlabs", "cartesia"].includes(provider)) {
+    res.status(400).json({ error: "provider must be 'elevenlabs' or 'cartesia'" });
+    return;
+  }
+  const key = String(api_key ?? "").trim();
+  if (!key || key.length < 10 || key.length > 200) {
+    res.status(400).json({ error: "api_key looks invalid" });
+    return;
+  }
+  const existing = await getAgent(id);
+  if (!existing) {
+    res.status(404).json({ error: "Agent not found" });
+    return;
+  }
+  const next = { ...(existing.provider_api_keys ?? {}), [provider]: key };
+  const updated = await updateAgent(id, { provider_api_keys: next });
+  res.json({ agent: updated ? redactAgent(updated) : null });
 };
 
 function sanitize(body: any): any {
   const out: any = { ...body };
+  // Never let the generic update route write provider keys — must use the
+  // dedicated endpoint so we can validate them.
+  if ("provider_api_keys" in out) delete out.provider_api_keys;
   if (out.tts_provider && !["deepgram", "elevenlabs", "cartesia"].includes(out.tts_provider)) {
     out.tts_provider = "deepgram";
   }
@@ -168,7 +200,7 @@ const patch: RequestHandler = async (req, res) => {
     res.status(404).json({ error: "Agent not found" });
     return;
   }
-  res.json({ agent: updated });
+  res.json({ agent: redactAgent(updated) });
 };
 
 const remove: RequestHandler = async (req, res) => {
@@ -209,6 +241,7 @@ router.post("/agents/sample-voice", sampleVoice);
 router.get("/agents/:id", getOne);
 router.post("/agents", create);
 router.patch("/agents/:id", patch);
+router.post("/agents/:id/provider-key", setProviderKey);
 router.delete("/agents/:id", remove);
 
 export default router;

@@ -31,6 +31,7 @@ from typing import Optional
 from livekit import agents, rtc
 from livekit.agents import Agent, AgentSession, RoomInputOptions
 from livekit.plugins import deepgram, noise_cancellation, openai, silero
+from fillers import FillerCache
 
 # Optional premium TTS providers — imported lazily so missing keys don't crash.
 try:
@@ -42,6 +43,15 @@ try:
     from livekit.plugins import cartesia as cartesia_plugin  # type: ignore
 except Exception:
     cartesia_plugin = None  # type: ignore
+
+# Optional multilingual turn-detector model. When available it dramatically
+# improves end-of-utterance detection across 14+ languages vs raw VAD.
+try:
+    from livekit.plugins.turn_detector.multilingual import MultilingualModel  # type: ignore
+    _multilingual_available = True
+except Exception:
+    MultilingualModel = None  # type: ignore
+    _multilingual_available = False
 
 REQUIRED_ENV = (
     "LIVEKIT_URL", "LIVEKIT_API_KEY", "LIVEKIT_API_SECRET",
@@ -262,9 +272,37 @@ async def entrypoint(ctx: agents.JobContext):
     except Exception:
         logger.warning("Could not parse room metadata as JSON")
 
+    # Validate the per-call config against the canonical catalog served by
+    # the api-server so worker behaviour can never silently drift from the
+    # frontend's options. We don't fail the call on mismatch — just log loudly.
+    try:
+        catalog_url = f"{INTERNAL_API_URL}/api/agents/catalog"
+        with urllib.request.urlopen(catalog_url, timeout=2) as r:
+            catalog = json.loads(r.read())
+        known_voices = {v["id"] for v in catalog.get("voices", [])}
+        known_langs = {l["id"] for l in catalog.get("languages", [])}
+        cfg_voice = cfg.get("voice_id")
+        cfg_lang = cfg.get("language")
+        if cfg_voice and cfg_voice not in known_voices:
+            logger.warning(f"voice_id '{cfg_voice}' not in shared catalog")
+        if cfg_lang and cfg_lang not in known_langs:
+            logger.warning(f"language '{cfg_lang}' not in shared catalog")
+    except Exception as e:
+        logger.debug(f"Catalog validation skipped: {e}")
+
     user_prompt = (cfg.get("user_prompt") or "").strip()
     greeting = (cfg.get("greeting") or "").strip()
     tts_provider = (cfg.get("tts_provider") or "deepgram").strip().lower()
+    # Per-agent provider API keys override env vars at runtime so users can
+    # paste a key in the dashboard without restarting the worker.
+    provider_keys = cfg.get("provider_api_keys") or {}
+    if isinstance(provider_keys, dict):
+        eleven_key = (provider_keys.get("elevenlabs") or "").strip()
+        cartesia_key = (provider_keys.get("cartesia") or "").strip()
+        if eleven_key:
+            os.environ["ELEVENLABS_API_KEY"] = eleven_key
+        if cartesia_key:
+            os.environ["CARTESIA_API_KEY"] = cartesia_key
     voice_id = (cfg.get("voice_id") or "aura-2-thalia-en").strip()
     language = (cfg.get("language") or "en-US").strip()
     auto_detect = bool(cfg.get("auto_detect_language"))
@@ -303,9 +341,18 @@ async def entrypoint(ctx: agents.JobContext):
         {"type": "answered"},
     )
 
-    # Build pipeline. min_endpointing_delay tunes barge-in / interruption
-    # responsiveness on AgentSession.
-    session = AgentSession(
+    # Turn detection: prefer LiveKit's MultilingualModel — it understands
+    # natural pauses, hedging and code-switching far better than raw VAD.
+    # Falls back to Silero VAD only when the plugin isn't installed.
+    turn_detection = None
+    if _multilingual_available and MultilingualModel is not None:
+        try:
+            turn_detection = MultilingualModel()
+            logger.info("Using MultilingualModel for turn detection")
+        except Exception as e:
+            logger.warning(f"MultilingualModel init failed, falling back to VAD: {e}")
+
+    session_kwargs: dict = dict(
         vad=silero.VAD.load(),
         stt=build_stt(stt_model, stt_language, language),
         llm=build_llm(),
@@ -313,6 +360,9 @@ async def entrypoint(ctx: agents.JobContext):
         min_endpointing_delay=endpointing / 1000.0,
         allow_interruptions=True,
     )
+    if turn_detection is not None:
+        session_kwargs["turn_detection"] = turn_detection
+    session = AgentSession(**session_kwargs)
 
     # Stream conversation turns back to the api-server for the transcript view.
     @session.on("conversation_item_added")
@@ -390,7 +440,22 @@ async def entrypoint(ctx: agents.JobContext):
         except Exception as e:
             logger.debug(f"lang detect hook failed: {e}")
 
+    # Pre-cache filler audio so playback is instant — no live TTS call,
+    # no dead air. We render every possible phrase once at session start
+    # and replay raw PCM frames from RAM through a dedicated audio track.
+    filler_cache: Optional[FillerCache] = None
     if fillers_enabled:
+        bank = custom_fillers or list(FILLERS.get(
+            (language or "en").split("-")[0].lower(), FILLERS["en"]
+        ))
+        filler_cache = FillerCache(ctx.room, bank)
+        try:
+            await filler_cache.initialize()
+        except Exception as e:
+            logger.warning(f"Filler cache init failed: {e}")
+            filler_cache = None
+
+    if fillers_enabled and filler_cache is not None and filler_cache.ready:
         @session.on("user_input_transcribed")
         def _on_user_done(ev) -> None:
             try:
@@ -399,19 +464,20 @@ async def entrypoint(ctx: agents.JobContext):
                 text = (getattr(ev, "transcript", "") or "").strip()
                 if len(text) < 3:
                     return
-                if custom_fillers:
-                    phrase = random.choice(custom_fillers)
-                else:
-                    phrase = _filler_for(language)
+                phrases = list(filler_cache._cache.keys())  # type: ignore[union-attr]
+                if not phrases:
+                    return
+                phrase = random.choice(phrases)
 
                 async def _delayed_filler():
                     try:
+                        # Sub-300ms emission: 250ms gate + ~10ms cache lookup
                         await asyncio.sleep(0.25)
-                        await session.say(phrase, add_to_chat_ctx=False, allow_interruptions=True)
+                        await filler_cache.play(phrase)  # type: ignore[union-attr]
                     except asyncio.CancelledError:
                         pass
                     except Exception as e:
-                        logger.debug(f"filler say failed: {e}")
+                        logger.debug(f"filler play failed: {e}")
                 _cancel_pending_filler()
                 pending_filler["task"] = asyncio.create_task(_delayed_filler())
             except Exception as e:

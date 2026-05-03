@@ -22,6 +22,9 @@ export type Agent = {
   speaking_speed: number; // 0.8 - 1.3
   fillers_enabled: boolean;
   custom_fillers: string[]; // overrides built-in language pack when non-empty
+  // Per-agent override for premium-provider API keys. Pasted from the UI
+  // and shipped to the worker via room metadata. Redacted in API responses.
+  provider_api_keys: { elevenlabs?: string; cartesia?: string };
   interruption_sensitivity: InterruptionSensitivity;
   wait_for_user_first: boolean;
   template_id: string | null;
@@ -80,6 +83,10 @@ function withDefaults(input: Partial<Agent> & { name: string }): Omit<Agent, "id
     speaking_speed: typeof input.speaking_speed === "number" ? input.speaking_speed : 1.0,
     fillers_enabled: input.fillers_enabled ?? true,
     custom_fillers: Array.isArray(input.custom_fillers) ? input.custom_fillers : [],
+    provider_api_keys:
+      input.provider_api_keys && typeof input.provider_api_keys === "object"
+        ? input.provider_api_keys
+        : {},
     interruption_sensitivity: input.interruption_sensitivity ?? "medium",
     wait_for_user_first: Boolean(input.wait_for_user_first),
     template_id: input.template_id ?? null,
@@ -116,6 +123,10 @@ function migrateAgent(a: any): Agent {
     speaking_speed: typeof a.speaking_speed === "number" ? a.speaking_speed : 1.0,
     fillers_enabled: a.fillers_enabled ?? true,
     custom_fillers: Array.isArray(a.custom_fillers) ? a.custom_fillers : [],
+    provider_api_keys:
+      a.provider_api_keys && typeof a.provider_api_keys === "object"
+        ? a.provider_api_keys
+        : {},
     interruption_sensitivity: (a.interruption_sensitivity as InterruptionSensitivity) ?? "medium",
     wait_for_user_first: Boolean(a.wait_for_user_first),
     template_id: a.template_id ?? null,
@@ -309,7 +320,24 @@ export function buildAgentMetadata(
     speaking_speed: agent.speaking_speed,
     fillers_enabled: agent.fillers_enabled,
     custom_fillers: agent.custom_fillers,
+    // Plaintext keys ride along in room metadata for outbound phone calls
+    // (the only participants are the worker + the SIP callee). For the
+    // in-browser test mode the user's browser participant CAN read room
+    // metadata, so we strip secrets there — browser tests fall back to
+    // env vars (or Deepgram) just like before this feature existed.
+    ...(extra.mode === "browser-test"
+      ? {}
+      : { provider_api_keys: agent.provider_api_keys ?? {} }),
     interruption_sensitivity: agent.interruption_sensitivity,
     wait_for_user_first: agent.wait_for_user_first,
   });
+}
+
+// Strip secrets before returning agents over the HTTP API.
+export function redactAgent(a: Agent): Agent {
+  const keys = a.provider_api_keys ?? {};
+  const masked: { elevenlabs?: string; cartesia?: string } = {};
+  if (keys.elevenlabs) masked.elevenlabs = "***";
+  if (keys.cartesia) masked.cartesia = "***";
+  return { ...a, provider_api_keys: masked };
 }
