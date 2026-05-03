@@ -300,7 +300,9 @@ export function buildAgentMetadata(
   // re-derive them — single source of truth lives in voices.ts.
   // When auto_detect is on, force Deepgram's multi-language detection mode.
   const lang = getLanguage(agent.language);
-  const stt_model = agent.auto_detect_language ? "nova-2" : (lang?.stt_model ?? "nova-3");
+  // Auto-detect uses Deepgram nova-3's multilingual mode for higher accuracy
+  // on code-switching calls; falls back to nova-2 when single-language.
+  const stt_model = agent.auto_detect_language ? "nova-3" : (lang?.stt_model ?? "nova-3");
   const stt_language = agent.auto_detect_language
     ? "multi"
     : (lang?.stt_language ?? agent.language);
@@ -320,14 +322,9 @@ export function buildAgentMetadata(
     speaking_speed: agent.speaking_speed,
     fillers_enabled: agent.fillers_enabled,
     custom_fillers: agent.custom_fillers,
-    // Plaintext keys ride along in room metadata for outbound phone calls
-    // (the only participants are the worker + the SIP callee). For the
-    // in-browser test mode the user's browser participant CAN read room
-    // metadata, so we strip secrets there — browser tests fall back to
-    // env vars (or Deepgram) just like before this feature existed.
-    ...(extra.mode === "browser-test"
-      ? {}
-      : { provider_api_keys: agent.provider_api_keys ?? {} }),
+    // We intentionally do NOT put provider API keys into room metadata
+    // (which is readable by every participant). The worker fetches them
+    // server-to-server from /api/internal/agents/:id/keys at job start.
     interruption_sensitivity: agent.interruption_sensitivity,
     wait_for_user_first: agent.wait_for_user_first,
   });

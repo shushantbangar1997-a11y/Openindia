@@ -125,14 +125,26 @@ def build_stt(model: str, stt_language: str, language: str):
         return deepgram.STT(model="nova-2", language=base)
 
 
-def build_tts(provider: str, voice_id: str, language: str, speed: float):
+def build_tts(
+    provider: str,
+    voice_id: str,
+    language: str,
+    speed: float,
+    *,
+    eleven_key: str = "",
+    cartesia_key: str = "",
+):
     """Construct the requested TTS engine, gracefully falling back to
-    Deepgram Aura if the premium provider isn't available."""
+    Deepgram Aura if the premium provider isn't available. Per-call keys
+    are passed explicitly so we never mutate process-global env vars
+    (which would bleed across concurrent jobs)."""
     provider = (provider or "deepgram").lower()
     speed = max(0.8, min(1.3, float(speed or 1.0)))
+    eleven_key = eleven_key or os.getenv("ELEVENLABS_API_KEY", "")
+    cartesia_key = cartesia_key or os.getenv("CARTESIA_API_KEY", "")
 
     if provider == "elevenlabs":
-        if elevenlabs_plugin and os.getenv("ELEVENLABS_API_KEY"):
+        if elevenlabs_plugin and eleven_key:
             try:
                 Voice = getattr(elevenlabs_plugin, "Voice", None)
                 if Voice is not None:
@@ -140,11 +152,13 @@ def build_tts(provider: str, voice_id: str, language: str, speed: float):
                     return elevenlabs_plugin.TTS(
                         voice=voice,
                         model="eleven_multilingual_v2",
+                        api_key=eleven_key,
                     )
                 # Newer plugin signature: voice_id kwarg.
                 return elevenlabs_plugin.TTS(
                     voice_id=voice_id,
                     model="eleven_multilingual_v2",
+                    api_key=eleven_key,
                 )
             except Exception as e:
                 logger.warning(f"ElevenLabs init failed, falling back: {e}")
@@ -152,7 +166,7 @@ def build_tts(provider: str, voice_id: str, language: str, speed: float):
             logger.warning("ElevenLabs requested but plugin or key missing — falling back to Deepgram")
 
     if provider == "cartesia":
-        if cartesia_plugin and os.getenv("CARTESIA_API_KEY"):
+        if cartesia_plugin and cartesia_key:
             try:
                 base = (language or "en").split("-")[0].lower()
                 return cartesia_plugin.TTS(
@@ -160,6 +174,7 @@ def build_tts(provider: str, voice_id: str, language: str, speed: float):
                     model="sonic-2",
                     language=base,
                     speed=speed,
+                    api_key=cartesia_key,
                 )
             except Exception as e:
                 logger.warning(f"Cartesia init failed, falling back: {e}")
@@ -293,16 +308,22 @@ async def entrypoint(ctx: agents.JobContext):
     user_prompt = (cfg.get("user_prompt") or "").strip()
     greeting = (cfg.get("greeting") or "").strip()
     tts_provider = (cfg.get("tts_provider") or "deepgram").strip().lower()
-    # Per-agent provider API keys override env vars at runtime so users can
-    # paste a key in the dashboard without restarting the worker.
-    provider_keys = cfg.get("provider_api_keys") or {}
-    if isinstance(provider_keys, dict):
-        eleven_key = (provider_keys.get("elevenlabs") or "").strip()
-        cartesia_key = (provider_keys.get("cartesia") or "").strip()
-        if eleven_key:
-            os.environ["ELEVENLABS_API_KEY"] = eleven_key
-        if cartesia_key:
-            os.environ["CARTESIA_API_KEY"] = cartesia_key
+    # Per-agent provider API keys are fetched server-to-server from the
+    # api-server's loopback-only /api/internal/agents/:id/keys endpoint,
+    # NEVER through room metadata (which the browser participant can read).
+    # Keys live as locals only — no os.environ mutation = no cross-call bleed.
+    eleven_key = ""
+    cartesia_key = ""
+    agent_id = (cfg.get("agent_id") or "").strip()
+    if agent_id:
+        try:
+            keys_url = f"{INTERNAL_API_URL}/api/internal/agents/{agent_id}/keys"
+            with urllib.request.urlopen(keys_url, timeout=2) as r:
+                keys_blob = json.loads(r.read()).get("provider_api_keys") or {}
+                eleven_key = (keys_blob.get("elevenlabs") or "").strip()
+                cartesia_key = (keys_blob.get("cartesia") or "").strip()
+        except Exception as e:
+            logger.debug(f"Per-agent key fetch failed (using env vars): {e}")
     voice_id = (cfg.get("voice_id") or "aura-2-thalia-en").strip()
     language = (cfg.get("language") or "en-US").strip()
     auto_detect = bool(cfg.get("auto_detect_language"))
@@ -356,7 +377,10 @@ async def entrypoint(ctx: agents.JobContext):
         vad=silero.VAD.load(),
         stt=build_stt(stt_model, stt_language, language),
         llm=build_llm(),
-        tts=build_tts(tts_provider, voice_id, language, speaking_speed),
+        tts=build_tts(
+            tts_provider, voice_id, language, speaking_speed,
+            eleven_key=eleven_key, cartesia_key=cartesia_key,
+        ),
         min_endpointing_delay=endpointing / 1000.0,
         allow_interruptions=True,
     )
@@ -418,7 +442,10 @@ async def entrypoint(ctx: agents.JobContext):
         if not base or base == current_lang["lang"]:
             return
         try:
-            new_tts = build_tts(tts_provider, voice_id, base, speaking_speed)
+            new_tts = build_tts(
+                tts_provider, voice_id, base, speaking_speed,
+                eleven_key=eleven_key, cartesia_key=cartesia_key,
+            )
             try:
                 session.tts = new_tts  # type: ignore[attr-defined]
             except Exception:
@@ -440,22 +467,25 @@ async def entrypoint(ctx: agents.JobContext):
         except Exception as e:
             logger.debug(f"lang detect hook failed: {e}")
 
-    # Pre-cache filler audio so playback is instant — no live TTS call,
-    # no dead air. We render every possible phrase once at session start
-    # and replay raw PCM frames from RAM through a dedicated audio track.
+    # Pre-cache filler audio in the agent's selected provider/voice so
+    # playback is instant — no live TTS call, no dead air. We kick off the
+    # render in the background so it never delays the greeting; if a filler
+    # is needed before the cache is ready we skip silently (the LLM reply
+    # is on its way regardless).
     filler_cache: Optional[FillerCache] = None
     if fillers_enabled:
         bank = custom_fillers or list(FILLERS.get(
             (language or "en").split("-")[0].lower(), FILLERS["en"]
         ))
-        filler_cache = FillerCache(ctx.room, bank)
-        try:
-            await filler_cache.initialize()
-        except Exception as e:
-            logger.warning(f"Filler cache init failed: {e}")
-            filler_cache = None
+        filler_cache = FillerCache(
+            ctx.room, bank,
+            provider=tts_provider, voice_id=voice_id, language=language,
+            eleven_key=eleven_key, cartesia_key=cartesia_key,
+        )
+        # Background warmup so greeting fires immediately after session.start.
+        asyncio.create_task(filler_cache.initialize())
 
-    if fillers_enabled and filler_cache is not None and filler_cache.ready:
+    if fillers_enabled and filler_cache is not None:
         @session.on("user_input_transcribed")
         def _on_user_done(ev) -> None:
             try:
@@ -464,7 +494,11 @@ async def entrypoint(ctx: agents.JobContext):
                 text = (getattr(ev, "transcript", "") or "").strip()
                 if len(text) < 3:
                     return
-                phrases = list(filler_cache._cache.keys())  # type: ignore[union-attr]
+                # If cache isn't warm yet (first ~1s of the call), skip the
+                # filler — the real reply is already streaming.
+                if not filler_cache.ready:
+                    return
+                phrases = filler_cache.phrases_in_cache()
                 if not phrases:
                     return
                 phrase = random.choice(phrases)
@@ -473,7 +507,7 @@ async def entrypoint(ctx: agents.JobContext):
                     try:
                         # Sub-300ms emission: 250ms gate + ~10ms cache lookup
                         await asyncio.sleep(0.25)
-                        await filler_cache.play(phrase)  # type: ignore[union-attr]
+                        await filler_cache.play(phrase)
                     except asyncio.CancelledError:
                         pass
                     except Exception as e:

@@ -244,4 +244,23 @@ router.patch("/agents/:id", patch);
 router.post("/agents/:id/provider-key", setProviderKey);
 router.delete("/agents/:id", remove);
 
+// Internal-only: returns unredacted provider API keys for an agent. Bound to
+// loopback only by the api-server and never proxied externally. The worker
+// calls this at job start so secrets never travel through room metadata
+// (which is visible to every participant in the LiveKit room).
+const internalKeys: RequestHandler = async (req, res) => {
+  const remote = req.socket.remoteAddress ?? "";
+  if (!["127.0.0.1", "::1", "::ffff:127.0.0.1"].includes(remote)) {
+    res.status(403).json({ error: "loopback only" });
+    return;
+  }
+  const a = await getAgent(String(req.params["id"]));
+  if (!a) {
+    res.status(404).json({ error: "Agent not found" });
+    return;
+  }
+  res.json({ provider_api_keys: a.provider_api_keys ?? {} });
+};
+router.get("/internal/agents/:id/keys", internalKeys);
+
 export default router;
