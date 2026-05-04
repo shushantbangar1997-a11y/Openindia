@@ -28,6 +28,9 @@ export type Agent = {
   interruption_sensitivity: InterruptionSensitivity;
   wait_for_user_first: boolean;
   inbound_enabled: boolean;
+  // When inbound_enabled is on, controls whether the agent speaks first (auto-greet)
+  // or waits for the caller to speak first. Defaults to false = wait for caller.
+  inbound_auto_greet: boolean;
   template_id: string | null;
   created_at: string;
   updated_at: string;
@@ -153,6 +156,7 @@ function withDefaults(input: Partial<Agent> & { name: string }): Omit<Agent, "id
     interruption_sensitivity: input.interruption_sensitivity ?? "medium",
     wait_for_user_first: Boolean(input.wait_for_user_first),
     inbound_enabled: Boolean(input.inbound_enabled),
+    inbound_auto_greet: Boolean(input.inbound_auto_greet),
     template_id: input.template_id ?? null,
   };
 }
@@ -205,6 +209,7 @@ function migrateAgent(a: any): Agent {
     interruption_sensitivity: (a.interruption_sensitivity as InterruptionSensitivity) ?? "medium",
     wait_for_user_first: Boolean(a.wait_for_user_first),
     inbound_enabled: Boolean(a.inbound_enabled),
+    inbound_auto_greet: Boolean(a.inbound_auto_greet),
     template_id: a.template_id ?? null,
     created_at: a.created_at ?? nowIso(),
     updated_at: a.updated_at ?? nowIso(),
@@ -435,6 +440,7 @@ export function buildAgentMetadata(
     // server-to-server from /api/internal/agents/:id/keys at job start.
     interruption_sensitivity: agent.interruption_sensitivity,
     wait_for_user_first: agent.wait_for_user_first,
+    inbound_auto_greet: agent.inbound_auto_greet,
   });
 }
 

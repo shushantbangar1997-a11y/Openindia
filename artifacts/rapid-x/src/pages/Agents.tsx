@@ -61,6 +61,7 @@ const EMPTY: Draft = {
   interruption_sensitivity: "medium",
   wait_for_user_first: false,
   inbound_enabled: false,
+  inbound_auto_greet: false,
   template_id: null,
 };
 
@@ -665,6 +666,14 @@ export default function AgentsPage() {
                         label="Enable inbound calls"
                         hint="When on, configure your SIP provider to POST to the webhook URL below on incoming calls."
                       />
+                      {draft.inbound_enabled && (
+                        <SfToggle
+                          checked={draft.inbound_auto_greet}
+                          onChange={(b) => setDraft({ ...draft, inbound_auto_greet: b })}
+                          label="Auto-greet inbound callers"
+                          hint="When off (default), the agent waits for the caller to speak first — recommended for most inbound flows. When on, the agent speaks first using the configured greeting."
+                        />
+                      )}
                       {!creating && selectedId && draft.inbound_enabled && (
                         <InboundWebhookUrl
                           agentId={selectedId}

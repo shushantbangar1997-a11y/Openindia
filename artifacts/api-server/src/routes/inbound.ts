@@ -65,12 +65,10 @@ router.post("/inbound/:agentId", async (req, res) => {
 
     const body = req.body ?? {};
 
-    // ── Detect webhook mode ───────────────────────────────────────────────────
-    // LiveKit SIP dispatch webhook sends call_id (or callId); generic SIP
-    // providers send From/from/caller.
-    const isLiveKitDispatch = Boolean(body["call_id"] ?? body["callId"]);
-
-    // Extract caller number from either format.
+    // ── Extract caller number ─────────────────────────────────────────────────
+    // This endpoint is designed to be called by a LiveKit SIP dispatch rule.
+    // LiveKit's dispatch webhook POSTs { call_id, from, to } on incoming SIP.
+    // The caller number lives in body.from (E.164 format from LiveKit).
     const callerNumber: string = String(
       body["from"] ?? body["caller_id"] ?? body["From"] ??
       body["caller"] ?? body["CallerNumber"] ?? "unknown"
@@ -81,7 +79,7 @@ router.post("/inbound/:agentId", async (req, res) => {
     const participantName = `Caller ${callerNumber}`;
 
     req.log.info(
-      { agentId, callerNumber, roomName, isLiveKitDispatch },
+      { agentId, callerNumber, roomName },
       "Inbound call webhook received",
     );
 
@@ -115,24 +113,14 @@ router.post("/inbound/:agentId", async (req, res) => {
       direction: "inbound",
     });
 
-    // ── Respond appropriately per mode ────────────────────────────────────────
-    if (isLiveKitDispatch) {
-      // LiveKit expects { room_name, participant_identity } to bridge the caller.
-      return res.json({
-        room_name: roomName,
-        participant_identity: participantIdentity,
-        participant_name: participantName,
-      });
-    }
-
-    // Generic SIP provider: acknowledge and provide room info. The SIP provider
-    // must also configure a LiveKit SIP dispatch rule pointing to the same room,
-    // or use a LiveKit SIP trunk that dispatches inbound calls automatically.
+    // ── Respond to LiveKit SIP dispatch rule ──────────────────────────────────
+    // LiveKit calls this webhook when an inbound SIP call arrives on the trunk.
+    // Responding with { room_name, participant_identity } tells LiveKit which
+    // pre-created room to bridge the caller into, where the worker is waiting.
     return res.json({
-      success: true,
-      roomName,
-      agentId: agent.id,
-      message: "Room created. Ensure your SIP trunk's dispatch rule routes the call to this room.",
+      room_name: roomName,
+      participant_identity: participantIdentity,
+      participant_name: participantName,
     });
 
   } catch (error: any) {

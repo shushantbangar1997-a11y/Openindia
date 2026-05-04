@@ -466,19 +466,18 @@ async def entrypoint(ctx: agents.JobContext):
     fillers_enabled = bool(cfg.get("fillers_enabled", True))
     custom_fillers = [str(s).strip() for s in (cfg.get("custom_fillers") or []) if str(s).strip()]
     sensitivity = (cfg.get("interruption_sensitivity") or "medium").strip().lower()
-    # cfg.get("wait_for_user_first") is the per-agent stored setting (False by default).
-    # For inbound calls the human caller initiates the conversation, so the agent
-    # should wait unless the user has EXPLICITLY set wait_for_user_first=True on
-    # the outbound path (which is an unrelated setting). We apply a mode-level
-    # default here in the worker: if the room was created as mode:"inbound" AND
-    # the agent has not explicitly opted into wait-first, we flip the default.
+    # For inbound calls the caller always initiates the conversation, so the
+    # default behavior is to wait for them to speak first. Agents can opt into
+    # auto-greet (agent speaks first) via the dedicated inbound_auto_greet flag,
+    # which is separate from wait_for_user_first (an outbound-oriented setting).
     mode = (cfg.get("mode") or "").strip()
-    explicit_wait = cfg.get("wait_for_user_first")  # None / False / True
-    if mode == "inbound" and not explicit_wait:
-        # Inbound default: wait for caller to speak first.
-        wait_for_user_first = True
+    if mode == "inbound":
+        # inbound_auto_greet=True → agent speaks first (greeting played)
+        # inbound_auto_greet=False (default) → wait for caller to speak first
+        inbound_auto_greet = bool(cfg.get("inbound_auto_greet"))
+        wait_for_user_first = not inbound_auto_greet
     else:
-        wait_for_user_first = bool(explicit_wait)
+        wait_for_user_first = bool(cfg.get("wait_for_user_first"))
 
     # Fetch agent knowledge base documents from the api-server.
     # Stored as a list so we can do per-turn relevance selection (keyword scoring)

@@ -76,6 +76,8 @@ function sanitize(body: any): any {
   // Never let the generic update route write provider keys — must use the
   // dedicated endpoint so we can validate them.
   if ("provider_api_keys" in out) delete out.provider_api_keys;
+  // inbound_token is a computed field (HMAC) — never stored in DB.
+  if ("inbound_token" in out) delete out.inbound_token;
   if (out.tts_provider && !["deepgram", "elevenlabs", "cartesia"].includes(out.tts_provider)) {
     out.tts_provider = "deepgram";
   }

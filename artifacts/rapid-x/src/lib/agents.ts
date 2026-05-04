@@ -18,6 +18,9 @@ export type Agent = {
   interruption_sensitivity: "low" | "medium" | "high";
   wait_for_user_first: boolean;
   inbound_enabled: boolean;
+  // When inbound is enabled, controls whether the agent speaks first (true)
+  // or waits for the caller to speak first (false, the default).
+  inbound_auto_greet: boolean;
   inbound_token?: string;
   template_id: string | null;
   created_at: string;
