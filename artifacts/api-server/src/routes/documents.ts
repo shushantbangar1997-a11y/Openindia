@@ -89,14 +89,32 @@ async function extractText(buffer: Buffer, ext: string): Promise<string> {
   return buffer.toString("utf-8").trim();
 }
 
-async function scrapeUrl(rawUrl: string): Promise<{ title: string; content: string }> {
-  const parsed = new URL(rawUrl);
+// Safe fetch that re-validates the hostname after every redirect hop so an
+// attacker cannot chain a public-facing URL to an internal redirect target.
+async function safeFetch(url: string, hopsLeft = 5): Promise<Response> {
+  const parsed = new URL(url);
+  if (!["http:", "https:"].includes(parsed.protocol)) {
+    throw new Error("Only http/https URLs allowed");
+  }
   await assertNotPrivateHost(parsed.hostname);
-  const r = await fetch(rawUrl, {
+  const r = await fetch(url, {
     headers: { "User-Agent": "Mozilla/5.0 (compatible; RapidXBot/1.0)" },
     signal: AbortSignal.timeout(10_000),
-    redirect: "follow",
+    redirect: "manual",
   });
+  if (r.status >= 300 && r.status < 400) {
+    if (hopsLeft <= 0) throw new Error("Too many redirects");
+    const location = r.headers.get("location");
+    if (!location) throw new Error("Redirect with no Location header");
+    const next = new URL(location, url).href;
+    return safeFetch(next, hopsLeft - 1);
+  }
+  return r;
+}
+
+async function scrapeUrl(rawUrl: string): Promise<{ title: string; content: string }> {
+  const parsed = new URL(rawUrl);
+  const r = await safeFetch(rawUrl);
   if (!r.ok) throw new Error(`HTTP ${r.status}`);
   const contentType = r.headers.get("content-type") ?? "";
   if (!contentType.includes("text/html") && !contentType.includes("text/plain")) {

@@ -962,7 +962,7 @@ function KnowledgeTab({ agentId, creating }: { agentId: string | null; creating:
             >
               <Upload className="w-6 h-6 text-gray-300 mx-auto mb-2" />
               <p className="text-sm font-medium text-gray-500 mb-1">Click to upload</p>
-              <p className="text-[11px] text-gray-400">Supported: .txt, .md, .csv · Max 2 MB</p>
+              <p className="text-[11px] text-gray-400">Supported: .pdf, .docx, .txt, .md, .csv · Max 5 MB</p>
               {adding && (
                 <div className="flex items-center justify-center gap-2 mt-3 text-xs text-violet-600">
                   <Loader2 className="w-3.5 h-3.5 animate-spin" /> Uploading…
@@ -972,7 +972,7 @@ function KnowledgeTab({ agentId, creating }: { agentId: string | null; creating:
             <input
               ref={fileRef}
               type="file"
-              accept=".txt,.md,.csv"
+              accept=".pdf,.docx,.txt,.md,.csv"
               className="hidden"
               onChange={(e) => {
                 const f = e.target.files?.[0];
