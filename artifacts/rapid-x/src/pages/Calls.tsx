@@ -105,9 +105,9 @@ function CallDetail({ callId }: { callId: string }) {
     );
   }
 
-  const showSummaryCard =
-    c.summary ||
-    (c.status === "ended" && c.transcript.length > 0 && !c.summary);
+  // Show the summary card for any ended call — with content once available,
+  // or with a "Generating…" state while it's pending (transcript may be empty).
+  const showSummaryCard = c.status === "ended" || Boolean(c.summary);
 
   return (
     <div className="flex flex-col h-full overflow-hidden">
@@ -181,7 +181,7 @@ function CallDetail({ callId }: { callId: string }) {
 }
 
 function SummaryCard({ call: c }: { call: CallRecord }) {
-  const generating = c.status === "ended" && c.transcript.length > 0 && !c.summary;
+  const generating = c.status === "ended" && !c.summary;
 
   return (
     <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-5">

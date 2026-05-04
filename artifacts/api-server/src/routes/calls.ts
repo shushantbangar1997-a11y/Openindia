@@ -75,8 +75,9 @@ const events: RequestHandler = async (req, res) => {
     }
     res.json({ call: c });
 
-    // Fire-and-forget AI summary — only for ended calls with transcript content.
-    if (type === "ended" && c.transcript.length > 0 && !c.summary) {
+    // Fire-and-forget AI summary for all ended calls (summariseCall handles
+    // empty transcripts with a no-answer fallback, so no transcript gate here).
+    if (type === "ended" && !c.summary) {
       setImmediate(async () => {
         try {
           const result = await summariseCall(c);
