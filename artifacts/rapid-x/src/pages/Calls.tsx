@@ -1,6 +1,8 @@
 import { useState } from "react";
 import {
   Phone,
+  PhoneIncoming,
+  PhoneOutgoing,
   User,
   Bot,
   Loader2,
@@ -58,7 +60,10 @@ export default function CallsPage() {
                 <span className={`text-sm font-semibold truncate ${c.id === selected ? "text-violet-700" : "text-gray-800"}`}>
                   {c.phone_number}
                 </span>
-                <StatusPill status={c.status} />
+                <div className="flex items-center gap-1.5 shrink-0">
+                  <DirectionBadge direction={c.direction} />
+                  <StatusPill status={c.status} />
+                </div>
               </div>
               <div className="flex items-center justify-between text-[11px] text-gray-400 mb-1">
                 <span className="truncate">{c.agent_name ?? "—"}</span>
@@ -133,7 +138,7 @@ function CallDetail({ callId }: { callId: string }) {
           <MetaCard icon={<Calendar className="w-3.5 h-3.5" />} label="Started" value={new Date(c.started_at).toLocaleString()} />
           <MetaCard icon={<Clock className="w-3.5 h-3.5" />} label="Duration" value={formatDuration(c)} />
           <MetaCard icon={<Bot className="w-3.5 h-3.5" />} label="Agent" value={c.agent_name ?? "—"} />
-          <MetaCard icon={<Activity className="w-3.5 h-3.5" />} label="End reason" value={c.end_reason ?? "—"} />
+          <MetaCard icon={<Activity className="w-3.5 h-3.5" />} label="Direction" value={c.direction === "inbound" ? "Inbound" : "Outbound"} />
         </div>
       </div>
 
@@ -255,6 +260,23 @@ function MetaCard({ icon, label, value }: { icon: React.ReactNode; label: string
       </div>
       <div className="text-xs font-semibold text-gray-700 truncate">{value}</div>
     </div>
+  );
+}
+
+function DirectionBadge({ direction }: { direction: CallRecord["direction"] }) {
+  if (!direction || direction === "outbound") {
+    return (
+      <span className="inline-flex items-center gap-1 text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-gray-50 border border-gray-200 text-gray-400">
+        <PhoneOutgoing className="w-2.5 h-2.5" />
+        Out
+      </span>
+    );
+  }
+  return (
+    <span className="inline-flex items-center gap-1 text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-blue-50 border border-blue-200 text-blue-600">
+      <PhoneIncoming className="w-2.5 h-2.5" />
+      In
+    </span>
   );
 }
 

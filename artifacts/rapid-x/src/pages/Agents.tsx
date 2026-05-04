@@ -60,6 +60,7 @@ const EMPTY: Draft = {
   provider_api_keys: {},
   interruption_sensitivity: "medium",
   wait_for_user_first: false,
+  inbound_enabled: false,
   template_id: null,
 };
 
@@ -653,6 +654,31 @@ export default function AgentsPage() {
                         hint="Useful for inbound flows where the caller initiates the conversation."
                       />
                     </SfSection>
+
+                    <SfSection
+                      title="Inbound calls"
+                      subtitle="Allow this agent to receive incoming calls via webhook."
+                    >
+                      <SfToggle
+                        checked={draft.inbound_enabled}
+                        onChange={(b) => setDraft({ ...draft, inbound_enabled: b })}
+                        label="Enable inbound calls"
+                        hint="When on, configure your SIP provider to POST to the webhook URL below on incoming calls."
+                      />
+                      {!creating && selectedId && draft.inbound_enabled && (
+                        <InboundWebhookUrl agentId={selectedId} />
+                      )}
+                      {!creating && selectedId && !draft.inbound_enabled && (
+                        <p className="text-[11px] text-gray-400">
+                          Enable inbound calls to reveal your webhook URL.
+                        </p>
+                      )}
+                      {creating && (
+                        <p className="text-[11px] text-gray-400">
+                          Save this assistant first to get a webhook URL.
+                        </p>
+                      )}
+                    </SfSection>
                   </>
                 )}
 
@@ -1135,6 +1161,44 @@ function ApiKeyOnboarding({ provider, agentId, onSaved }: {
           </button>
         </div>
       </details>
+    </div>
+  );
+}
+
+function InboundWebhookUrl({ agentId }: { agentId: string }) {
+  const [copied, setCopied] = useState(false);
+  const webhookUrl = `${window.location.origin}${apiUrl(`/inbound/${agentId}`)}`;
+  const onCopy = async () => {
+    try {
+      await navigator.clipboard.writeText(webhookUrl);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch {}
+  };
+  return (
+    <div className="mt-3 rounded-xl bg-blue-50 border border-blue-200 p-3.5 space-y-2">
+      <div className="flex items-center gap-2 text-[11px] font-semibold text-blue-700 uppercase tracking-wide">
+        <Link className="w-3.5 h-3.5" />
+        Webhook URL
+      </div>
+      <div className="flex items-center gap-2">
+        <input
+          readOnly
+          value={webhookUrl}
+          className="flex-1 px-2.5 py-1.5 bg-white border border-blue-200 rounded-lg text-xs font-mono text-gray-700 focus:outline-none focus:ring-2 focus:ring-blue-400/30"
+        />
+        <button
+          type="button"
+          onClick={onCopy}
+          className="shrink-0 flex items-center gap-1.5 px-2.5 py-1.5 bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold rounded-lg transition-colors"
+        >
+          {copied ? <CheckCircle className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
+          {copied ? "Copied!" : "Copy"}
+        </button>
+      </div>
+      <p className="text-[11px] text-blue-600 leading-relaxed">
+        Paste this URL into your SIP provider's inbound webhook settings. When a call arrives, the provider posts here and your agent picks it up automatically.
+      </p>
     </div>
   );
 }

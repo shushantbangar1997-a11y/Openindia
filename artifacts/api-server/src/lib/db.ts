@@ -27,6 +27,7 @@ export type Agent = {
   provider_api_keys: { elevenlabs?: string; cartesia?: string };
   interruption_sensitivity: InterruptionSensitivity;
   wait_for_user_first: boolean;
+  inbound_enabled: boolean;
   template_id: string | null;
   created_at: string;
   updated_at: string;
@@ -48,6 +49,7 @@ export type CallRecord = {
   phone_number: string;
   room_name: string;
   status: "ringing" | "answered" | "ended" | "failed";
+  direction: "inbound" | "outbound";
   started_at: string;
   answered_at: string | null;
   ended_at: string | null;
@@ -150,6 +152,7 @@ function withDefaults(input: Partial<Agent> & { name: string }): Omit<Agent, "id
         : {},
     interruption_sensitivity: input.interruption_sensitivity ?? "medium",
     wait_for_user_first: Boolean(input.wait_for_user_first),
+    inbound_enabled: Boolean(input.inbound_enabled),
     template_id: input.template_id ?? null,
   };
 }
@@ -167,6 +170,17 @@ function defaultAgent(): Agent {
     ...base,
     created_at: nowIso(),
     updated_at: nowIso(),
+  };
+}
+
+// Migrate older call records to add missing fields.
+function migrateCall(c: any): CallRecord {
+  return {
+    ...c,
+    direction: (c.direction === "inbound" || c.direction === "outbound") ? c.direction : "outbound",
+    summary: c.summary,
+    outcome: c.outcome,
+    sentiment: c.sentiment,
   };
 }
 
@@ -190,6 +204,7 @@ function migrateAgent(a: any): Agent {
         : {},
     interruption_sensitivity: (a.interruption_sensitivity as InterruptionSensitivity) ?? "medium",
     wait_for_user_first: Boolean(a.wait_for_user_first),
+    inbound_enabled: Boolean(a.inbound_enabled),
     template_id: a.template_id ?? null,
     created_at: a.created_at ?? nowIso(),
     updated_at: a.updated_at ?? nowIso(),
@@ -215,7 +230,7 @@ async function load(): Promise<Store> {
       const parsed = JSON.parse(raw) as Store;
       cache = {
         agents: Array.isArray(parsed.agents) ? parsed.agents.map(migrateAgent) : [],
-        calls: Array.isArray(parsed.calls) ? parsed.calls : [],
+        calls: Array.isArray(parsed.calls) ? parsed.calls.map(migrateCall) : [],
         settings: parsed.settings ?? undefined,
         knowledge_docs: Array.isArray(parsed.knowledge_docs) ? parsed.knowledge_docs : [],
       };
@@ -333,8 +348,8 @@ export async function getCall(id: string): Promise<CallRecord | null> {
 export async function createCall(
   input: Omit<
     CallRecord,
-    "id" | "transcript" | "answered_at" | "ended_at" | "end_reason" | "status"
-  > & { status?: CallRecord["status"] },
+    "id" | "transcript" | "answered_at" | "ended_at" | "end_reason" | "status" | "direction"
+  > & { status?: CallRecord["status"]; direction?: CallRecord["direction"] },
 ): Promise<CallRecord> {
   const s = await load();
   const c: CallRecord = {
@@ -344,6 +359,7 @@ export async function createCall(
     phone_number: input.phone_number,
     room_name: input.room_name,
     status: input.status ?? "ringing",
+    direction: input.direction ?? "outbound",
     started_at: input.started_at,
     answered_at: null,
     ended_at: null,

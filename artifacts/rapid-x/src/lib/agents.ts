@@ -17,6 +17,7 @@ export type Agent = {
   provider_api_keys: { elevenlabs?: string; cartesia?: string };
   interruption_sensitivity: "low" | "medium" | "high";
   wait_for_user_first: boolean;
+  inbound_enabled: boolean;
   template_id: string | null;
   created_at: string;
   updated_at: string;
@@ -32,6 +33,7 @@ export type CallRecord = {
   phone_number: string;
   room_name: string;
   status: "ringing" | "answered" | "ended" | "failed";
+  direction: "inbound" | "outbound";
   started_at: string;
   answered_at: string | null;
   ended_at: string | null;
@@ -136,5 +138,16 @@ export function useCallStats(intervalMs = 10_000) {
     queryFn: () => apiGet<CallStats>("/calls/stats"),
     refetchInterval: intervalMs,
     staleTime: 5_000,
+  });
+}
+
+export function useInboundAgents() {
+  return useQuery({
+    queryKey: ["agents", "inbound"],
+    queryFn: () =>
+      apiGet<{ agents: Agent[] }>("/agents").then((d) =>
+        d.agents.filter((a) => a.inbound_enabled),
+      ),
+    staleTime: 10_000,
   });
 }

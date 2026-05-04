@@ -92,6 +92,9 @@ function sanitize(body: any): any {
   if (out.auto_detect_language !== undefined) {
     out.auto_detect_language = Boolean(out.auto_detect_language);
   }
+  if (out.inbound_enabled !== undefined) {
+    out.inbound_enabled = Boolean(out.inbound_enabled);
+  }
   return out;
 }
 

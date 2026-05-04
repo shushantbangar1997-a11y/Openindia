@@ -1,7 +1,9 @@
 import CallDispatcher from "@/components/CallDispatcher";
 import BulkDialer from "@/components/BulkDialer";
-import { Phone, BarChart2, Clock, CheckCircle, Zap } from "lucide-react";
-import { useCallStats } from "@/lib/agents";
+import { Phone, BarChart2, Clock, CheckCircle, Zap, PhoneIncoming, Bot, Copy, ExternalLink } from "lucide-react";
+import { useCallStats, useInboundAgents } from "@/lib/agents";
+import { apiUrl } from "@/lib/api";
+import { useState } from "react";
 
 export default function Home() {
   return (
@@ -27,6 +29,7 @@ export default function Home() {
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 max-w-4xl">
           <CallDispatcher />
           <BulkDialer />
+          <InboundLines />
         </div>
       </div>
     </div>
@@ -116,3 +119,84 @@ function formatMs(ms: number): string {
   if (m === 0) return `${r}s`;
   return `${m}m ${r}s`;
 }
+
+function InboundLines() {
+  const { data: agents, isLoading } = useInboundAgents();
+  const [copiedId, setCopiedId] = useState<string | null>(null);
+
+  const copyUrl = async (agentId: string, url: string) => {
+    try {
+      await navigator.clipboard.writeText(url);
+      setCopiedId(agentId);
+      setTimeout(() => setCopiedId(null), 2000);
+    } catch {}
+  };
+
+  return (
+    <div className="bg-white rounded-2xl border border-gray-100 shadow-sm overflow-hidden">
+      <div className="px-5 py-4 border-b border-gray-100 flex items-center gap-3">
+        <div className="w-9 h-9 rounded-xl bg-blue-50 flex items-center justify-center shrink-0">
+          <PhoneIncoming className="w-4 h-4 text-blue-500" />
+        </div>
+        <div>
+          <h2 className="text-sm font-semibold text-gray-900">Inbound lines</h2>
+          <p className="text-xs text-gray-400">Agents ready to receive calls</p>
+        </div>
+      </div>
+
+      <div className="divide-y divide-gray-50">
+        {isLoading && (
+          <div className="px-5 py-6 text-center text-xs text-gray-400">Loading…</div>
+        )}
+        {!isLoading && (!agents || agents.length === 0) && (
+          <div className="px-5 py-8 text-center">
+            <PhoneIncoming className="w-8 h-8 text-gray-200 mx-auto mb-2" />
+            <p className="text-xs text-gray-500 font-medium mb-1">No inbound lines active</p>
+            <p className="text-[11px] text-gray-400">
+              Enable inbound calls on an assistant in the{" "}
+              <span className="font-semibold text-violet-600">Agents → Call behavior</span> tab.
+            </p>
+          </div>
+        )}
+        {agents && agents.map((agent) => {
+          const webhookUrl = `${window.location.origin}${apiUrl(`/inbound/${agent.id}`)}`;
+          const isCopied = copiedId === agent.id;
+          return (
+            <div key={agent.id} className="px-5 py-3.5 flex items-center gap-3">
+              <div className="w-8 h-8 rounded-lg bg-violet-50 flex items-center justify-center shrink-0">
+                <Bot className="w-4 h-4 text-violet-500" />
+              </div>
+              <div className="flex-1 min-w-0">
+                <div className="text-sm font-semibold text-gray-800 truncate">{agent.name}</div>
+                <div className="text-[11px] text-gray-400 font-mono truncate mt-0.5">
+                  {webhookUrl.replace(/^https?:\/\//, "")}
+                </div>
+              </div>
+              <div className="flex items-center gap-1.5 shrink-0">
+                <button
+                  onClick={() => copyUrl(agent.id, webhookUrl)}
+                  className="p-1.5 rounded-lg text-gray-400 hover:text-blue-600 hover:bg-blue-50 transition-colors"
+                  title="Copy webhook URL"
+                >
+                  {isCopied ? (
+                    <CheckCircle className="w-4 h-4 text-emerald-500" />
+                  ) : (
+                    <Copy className="w-4 h-4" />
+                  )}
+                </button>
+                <a
+                  href={`/rapid-x/agents`}
+                  className="p-1.5 rounded-lg text-gray-400 hover:text-violet-600 hover:bg-violet-50 transition-colors"
+                  title="Open agent settings"
+                >
+                  <ExternalLink className="w-4 h-4" />
+                </a>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+

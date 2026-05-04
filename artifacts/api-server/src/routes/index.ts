@@ -8,6 +8,7 @@ import tokenRouter from "./token";
 import settingsRouter from "./settings";
 import elevenLabsRouter from "./elevenlabs";
 import documentsRouter from "./documents";
+import inboundRouter from "./inbound";
 
 const router: IRouter = Router();
 
@@ -20,5 +21,6 @@ router.use(tokenRouter);
 router.use(settingsRouter);
 router.use(elevenLabsRouter);
 router.use(documentsRouter);
+router.use(inboundRouter);
 
 export default router;

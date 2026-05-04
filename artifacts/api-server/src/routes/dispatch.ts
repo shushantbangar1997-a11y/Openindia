@@ -67,6 +67,7 @@ router.post("/dispatch", async (req, res) => {
       room_name: roomName,
       started_at: new Date().toISOString(),
       status: "ringing",
+      direction: "outbound",
     });
 
     // @ts-ignore - createSipParticipant signature
