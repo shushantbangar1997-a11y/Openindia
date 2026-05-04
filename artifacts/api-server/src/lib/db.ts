@@ -61,18 +61,21 @@ export type KnowledgeDoc = {
   id: string;
   agent_id: string;
   title: string;
-  content: string;
+  content: string;  // populated at read time from per-doc file on disk
   size: number;
   source_type: "text" | "url" | "file";
   source_url?: string;
   created_at: string;
 };
 
+// Metadata stored in JSON (content omitted — lives in a separate file).
+type KnowledgeDocMeta = Omit<KnowledgeDoc, "content">;
+
 type Store = {
   agents: Agent[];
   calls: CallRecord[];
   settings?: GlobalSettings;
-  knowledge_docs?: KnowledgeDoc[];
+  knowledge_docs?: KnowledgeDocMeta[];
 };
 
 const DATA_DIR = path.resolve(process.cwd(), "data");
@@ -81,6 +84,35 @@ const DATA_DIR = path.resolve(process.cwd(), "data");
 // to bootstrap a fresh checkout.
 const STORE_PATH = path.join(DATA_DIR, "store.runtime.json");
 const SEED_PATH = path.join(DATA_DIR, "store.seed.json");
+// Per-agent document content lives in individual files so the flat-JSON
+// store stays small even with large uploaded PDFs/DOCXs.
+const DOCS_DIR = path.join(DATA_DIR, "docs");
+
+function docContentPath(agentId: string, docId: string): string {
+  return path.join(DOCS_DIR, agentId, `${docId}.txt`);
+}
+
+async function writeDocContent(agentId: string, docId: string, content: string): Promise<void> {
+  const p = docContentPath(agentId, docId);
+  await fs.mkdir(path.dirname(p), { recursive: true });
+  await fs.writeFile(p, content, "utf-8");
+}
+
+async function readDocContent(agentId: string, docId: string): Promise<string> {
+  try {
+    return await fs.readFile(docContentPath(agentId, docId), "utf-8");
+  } catch {
+    return "";
+  }
+}
+
+async function removeDocContent(agentId: string, docId: string): Promise<void> {
+  try {
+    await fs.unlink(docContentPath(agentId, docId));
+  } catch {
+    // file may not exist — ignore
+  }
+}
 
 let cache: Store | null = null;
 let writeChain: Promise<void> = Promise.resolve();
@@ -384,26 +416,33 @@ export function buildAgentMetadata(
 }
 
 // ── Knowledge Docs ──────────────────────────────────────
+// Metadata is stored in the JSON flat-file; document content lives in
+// individual per-agent files under data/docs/{agent_id}/{doc_id}.txt
+// so the JSON store stays compact even for large PDF/DOCX uploads.
 export async function listKnowledgeDocs(agentId: string): Promise<KnowledgeDoc[]> {
   const s = await load();
-  return (s.knowledge_docs ?? [])
+  const metas = (s.knowledge_docs ?? [])
     .filter((d) => d.agent_id === agentId)
     .sort((a, b) => (a.created_at < b.created_at ? 1 : -1));
+  return Promise.all(
+    metas.map(async (m) => ({
+      ...m,
+      content: await readDocContent(agentId, m.id),
+    })),
+  );
 }
 
 export async function createKnowledgeDoc(
   input: Omit<KnowledgeDoc, "id" | "created_at"> & { size?: number },
 ): Promise<KnowledgeDoc> {
   const s = await load();
-  const doc: KnowledgeDoc = {
-    id: newId("kdoc"),
-    ...input,
-    created_at: nowIso(),
-  };
+  const id = newId("kdoc");
+  const { content, ...rest } = input;
+  const meta: KnowledgeDocMeta = { id, ...rest, created_at: nowIso() };
   if (!s.knowledge_docs) s.knowledge_docs = [];
-  s.knowledge_docs.push(doc);
-  await persist();
-  return doc;
+  s.knowledge_docs.push(meta);
+  await Promise.all([writeDocContent(input.agent_id, id, content), persist()]);
+  return { ...meta, content };
 }
 
 export async function deleteKnowledgeDoc(id: string, agentId: string): Promise<boolean> {
@@ -412,7 +451,7 @@ export async function deleteKnowledgeDoc(id: string, agentId: string): Promise<b
   const before = s.knowledge_docs.length;
   s.knowledge_docs = s.knowledge_docs.filter((d) => !(d.id === id && d.agent_id === agentId));
   if (s.knowledge_docs.length === before) return false;
-  await persist();
+  await Promise.all([persist(), removeDocContent(agentId, id)]);
   return true;
 }
 
@@ -420,7 +459,7 @@ export async function getAgentKnowledgeText(agentId: string): Promise<string> {
   const docs = await listKnowledgeDocs(agentId);
   if (docs.length === 0) return "";
   return docs
-    .map((d) => `### ${d.title}\n${d.content.slice(0, 4000)}`)
+    .map((d) => `### ${d.title}\n${d.content.slice(0, 4_000)}`)
     .join("\n\n---\n\n");
 }
 

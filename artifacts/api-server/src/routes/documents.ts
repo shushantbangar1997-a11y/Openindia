@@ -1,4 +1,4 @@
-import { Router, type IRouter, type RequestHandler } from "express";
+import { Router, type IRouter, type RequestHandler, type Request } from "express";
 import multer from "multer";
 import { lookup as dnsLookup } from "node:dns/promises";
 import {
@@ -6,8 +6,10 @@ import {
   deleteKnowledgeDoc,
   getAgent,
   listKnowledgeDocs,
-  type KnowledgeDoc,
 } from "../lib/db";
+
+// Extend Express Request to include multer's file field.
+type MulterRequest = Request & { file?: Express.Multer.File };
 
 const router: IRouter = Router();
 const upload = multer({
@@ -16,8 +18,6 @@ const upload = multer({
 });
 
 // ── SSRF guard ─────────────────────────────────────────────────────────────
-// Resolve the host and reject any private/loopback/link-local address so a
-// user cannot use the scrape endpoint to reach internal services.
 async function assertNotPrivateHost(host: string): Promise<void> {
   const check = async (family: 4 | 6): Promise<void> => {
     let addr: string;
@@ -34,18 +34,17 @@ async function assertNotPrivateHost(host: string): Promise<void> {
     }
     const p = addr.split(".").map(Number);
     const blocked =
-      p[0] === 127 ||                                       // loopback
-      p[0] === 10 ||                                        // RFC1918
-      (p[0] === 172 && p[1]! >= 16 && p[1]! <= 31) ||     // RFC1918
-      (p[0] === 192 && p[1] === 168) ||                    // RFC1918
-      (p[0] === 169 && p[1] === 254) ||                    // link-local
-      p[0] === 0;                                           // unspecified
+      p[0] === 127 ||
+      p[0] === 10 ||
+      (p[0] === 172 && p[1]! >= 16 && p[1]! <= 31) ||
+      (p[0] === 192 && p[1] === 168) ||
+      (p[0] === 169 && p[1] === 254) ||
+      p[0] === 0;
     if (blocked) throw new Error("Private address blocked");
   };
-  // Try both IPv4 and IPv6; if *either* resolves to a blocked range, reject.
   const results = await Promise.allSettled([check(4), check(6)]);
   for (const r of results) {
-    if (r.status === "rejected") throw r.reason;
+    if (r.status === "rejected") throw r.reason as Error;
   }
 }
 
@@ -70,11 +69,14 @@ async function extractText(buffer: Buffer, ext: string): Promise<string> {
     try {
       // Import directly from the internal lib path to avoid pdf-parse@1.x's
       // buggy "module.parent" check that runs its own test suite on import.
-      const pdfParse = require("pdf-parse/lib/pdf-parse.js") as (buf: Buffer) => Promise<{ text: string }>;
+      const pdfParse = require("pdf-parse/lib/pdf-parse.js") as (
+        buf: Buffer,
+      ) => Promise<{ text: string }>;
       const result = await pdfParse(buffer);
       return (result.text ?? "").trim();
-    } catch (e: any) {
-      throw new Error(`PDF extraction failed: ${e?.message}`);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      throw new Error(`PDF extraction failed: ${msg}`);
     }
   }
   if (ext === "docx") {
@@ -82,11 +84,11 @@ async function extractText(buffer: Buffer, ext: string): Promise<string> {
       const mammoth = await import("mammoth");
       const result = await mammoth.extractRawText({ buffer });
       return (result.value ?? "").trim();
-    } catch (e: any) {
-      throw new Error(`DOCX extraction failed: ${e?.message}`);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      throw new Error(`DOCX extraction failed: ${msg}`);
     }
   }
-  // txt / md / csv — raw UTF-8
   return buffer.toString("utf-8").trim();
 }
 
@@ -128,21 +130,37 @@ async function scrapeUrl(rawUrl: string): Promise<{ title: string; content: stri
   return { title: rawTitle.slice(0, 120), content };
 }
 
+// ── Body shape for JSON paths ────────────────────────────────────────────────
+type DocBody = {
+  source?: string;
+  url?: string;
+  title?: string;
+  content?: string;
+};
+
 // ── Route handlers ──────────────────────────────────────────────────────────
 const listDocs: RequestHandler = async (req, res) => {
   const agentId = String(req.params["id"]);
-  if (!await getAgent(agentId)) { res.status(404).json({ error: "Agent not found" }); return; }
+  if (!(await getAgent(agentId))) {
+    res.status(404).json({ error: "Agent not found" });
+    return;
+  }
   res.json({ docs: await listKnowledgeDocs(agentId) });
 };
 
-// Unified upload/add endpoint: dispatches by `source` field or file upload.
-const addDoc: RequestHandler = async (req, res) => {
+async function handleAddDoc(
+  req: MulterRequest,
+  res: Parameters<RequestHandler>[1],
+  bodyOverrides: Partial<DocBody> = {},
+): Promise<void> {
   const agentId = String(req.params["id"]);
-  if (!await getAgent(agentId)) { res.status(404).json({ error: "Agent not found" }); return; }
+  if (!(await getAgent(agentId))) {
+    res.status(404).json({ error: "Agent not found" });
+    return;
+  }
 
-  const file = (req as any).file as Express.Multer.File | undefined;
+  const file = req.file;
 
-  // ── File upload path ────────────────────────────────────────────────────
   if (file) {
     const name = file.originalname ?? "upload";
     const ext = name.split(".").pop()?.toLowerCase() ?? "";
@@ -152,7 +170,7 @@ const addDoc: RequestHandler = async (req, res) => {
       return;
     }
     try {
-      const content = (await extractText(file.buffer, ext)).slice(0, 16000);
+      const content = (await extractText(file.buffer, ext)).slice(0, 16_000);
       const title = name.replace(/\.[^.]+$/, "").slice(0, 120) || "Uploaded file";
       const doc = await createKnowledgeDoc({
         agent_id: agentId,
@@ -162,22 +180,30 @@ const addDoc: RequestHandler = async (req, res) => {
         source_type: "file",
       });
       res.status(201).json({ doc });
-    } catch (e: any) {
-      res.status(422).json({ error: e?.message || "Extraction failed" });
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : "Extraction failed";
+      res.status(422).json({ error: msg });
     }
     return;
   }
 
-  // ── URL scrape path ─────────────────────────────────────────────────────
-  const { source, url, title: bodyTitle, content: bodyContent } = (req.body ?? {}) as {
-    source?: string; url?: string; title?: string; content?: string;
-  };
+  const rawBody = (req.body ?? {}) as DocBody;
+  const body: DocBody = { ...rawBody, ...bodyOverrides };
+  const { source, url, title: bodyTitle, content: bodyContent } = body;
 
   if (source === "url" || (url && !bodyContent)) {
     const rawUrl = String(url ?? "").trim();
-    if (!rawUrl) { res.status(400).json({ error: "url required" }); return; }
+    if (!rawUrl) {
+      res.status(400).json({ error: "url required" });
+      return;
+    }
     let parsedUrl: URL;
-    try { parsedUrl = new URL(rawUrl); } catch { res.status(400).json({ error: "Invalid URL" }); return; }
+    try {
+      parsedUrl = new URL(rawUrl);
+    } catch {
+      res.status(400).json({ error: "Invalid URL" });
+      return;
+    }
     if (!["http:", "https:"].includes(parsedUrl.protocol)) {
       res.status(400).json({ error: "Only http/https URLs allowed" });
       return;
@@ -193,16 +219,22 @@ const addDoc: RequestHandler = async (req, res) => {
         source_url: parsedUrl.href,
       });
       res.status(201).json({ doc });
-    } catch (e: any) {
-      res.status(502).json({ error: `Could not fetch URL: ${e?.message || e}` });
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      res.status(502).json({ error: `Could not fetch URL: ${msg}` });
     }
     return;
   }
 
-  // ── Text snippet path ───────────────────────────────────────────────────
-  if (!bodyTitle || !String(bodyTitle).trim()) { res.status(400).json({ error: "title required" }); return; }
-  if (!bodyContent || !String(bodyContent).trim()) { res.status(400).json({ error: "content required" }); return; }
-  const content = String(bodyContent).trim().slice(0, 16000);
+  if (!bodyTitle || !String(bodyTitle).trim()) {
+    res.status(400).json({ error: "title required" });
+    return;
+  }
+  if (!bodyContent || !String(bodyContent).trim()) {
+    res.status(400).json({ error: "content required" });
+    return;
+  }
+  const content = String(bodyContent).trim().slice(0, 16_000);
   const doc = await createKnowledgeDoc({
     agent_id: agentId,
     title: String(bodyTitle).trim().slice(0, 120),
@@ -211,21 +243,26 @@ const addDoc: RequestHandler = async (req, res) => {
     source_type: "text",
   });
   res.status(201).json({ doc });
-};
+}
 
-// Keep legacy sub-path routes as aliases for backwards compat.
-const addTextAlias: RequestHandler = async (req, res) => {
-  (req.body as any).source = "text";
-  return addDoc(req, res);
-};
-const addUrlAlias: RequestHandler = async (req, res) => {
-  (req.body as any).source = "url";
-  return addDoc(req, res);
-};
+const addDoc: RequestHandler = (req, res) =>
+  handleAddDoc(req as MulterRequest, res);
+
+const addTextAlias: RequestHandler = (req, res) =>
+  handleAddDoc(req as MulterRequest, res, { source: "text" });
+
+const addUrlAlias: RequestHandler = (req, res) =>
+  handleAddDoc(req as MulterRequest, res, { source: "url" });
 
 const removeDoc: RequestHandler = async (req, res) => {
-  const ok = await deleteKnowledgeDoc(String(req.params["docId"]), String(req.params["id"]));
-  if (!ok) { res.status(404).json({ error: "Document not found" }); return; }
+  const ok = await deleteKnowledgeDoc(
+    String(req.params["docId"]),
+    String(req.params["id"]),
+  );
+  if (!ok) {
+    res.status(404).json({ error: "Document not found" });
+    return;
+  }
   res.json({ success: true });
 };
 
@@ -238,7 +275,6 @@ router.delete("/agents/:id/documents/:docId", removeDoc);
 
 // ── Internal knowledge endpoint ─────────────────────────────────────────────
 // Returns all docs as structured JSON for per-turn relevance scoring in the worker.
-// Same loopback + shared-secret guard as /api/internal/agents/:id/keys.
 const INTERNAL_TOKEN = process.env["INTERNAL_API_TOKEN"] ?? "";
 
 const internalKnowledge: RequestHandler = async (req, res) => {
