@@ -20,7 +20,7 @@ const list: RequestHandler = async (_req, res) => {
 };
 
 const stats: RequestHandler = async (_req, res) => {
-  const calls = await listCalls(10_000);
+  const calls = await listCalls(Number.MAX_SAFE_INTEGER);
   const total = calls.length;
   const answered = calls.filter((c) => c.answered_at !== null).length;
   const active_now = calls.filter(
