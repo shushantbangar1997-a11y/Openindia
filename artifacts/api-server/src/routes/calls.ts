@@ -87,7 +87,10 @@ const events: RequestHandler = async (req, res) => {
       _summarising.add(room);
       setImmediate(async () => {
         try {
-          const result = await summariseCall(c);
+          // Re-fetch the call record so any transcript turns that arrived
+          // after the "ended" event are included in the summary.
+          const callToSummarise = (await getCall(c.id)) ?? c;
+          const result = await summariseCall(callToSummarise);
           if (result) {
             await updateCallByRoom(room, {
               summary: result.summary,

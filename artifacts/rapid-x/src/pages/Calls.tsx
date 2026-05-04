@@ -65,7 +65,7 @@ export default function CallsPage() {
                 <span className="shrink-0 ml-2">{formatRelative(c.started_at)}</span>
               </div>
               {c.summary && (
-                <p className="text-[11px] text-gray-500 leading-relaxed line-clamp-2 mt-0.5">
+                <p className="text-[11px] text-gray-500 leading-relaxed line-clamp-1 mt-0.5">
                   {c.summary}
                 </p>
               )}
