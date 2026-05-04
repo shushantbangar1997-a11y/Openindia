@@ -86,7 +86,9 @@ router.post("/inbound/:agentId", async (req, res) => {
     );
 
     // ── Build agent metadata ──────────────────────────────────────────────────
-    // wait_for_user_first is forced to true for inbound in buildAgentMetadata.
+    // The worker reads mode:"inbound" and defaults wait_for_user_first to true
+    // unless the agent has explicitly configured it otherwise. Greeting behavior
+    // is also adjusted per-mode in the worker.
     const metadata = buildAgentMetadata(agent, {
       phone_number: callerNumber,
       mode: "inbound",

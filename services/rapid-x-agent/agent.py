@@ -466,8 +466,19 @@ async def entrypoint(ctx: agents.JobContext):
     fillers_enabled = bool(cfg.get("fillers_enabled", True))
     custom_fillers = [str(s).strip() for s in (cfg.get("custom_fillers") or []) if str(s).strip()]
     sensitivity = (cfg.get("interruption_sensitivity") or "medium").strip().lower()
-    wait_for_user_first = bool(cfg.get("wait_for_user_first"))
+    # cfg.get("wait_for_user_first") is the per-agent stored setting (False by default).
+    # For inbound calls the human caller initiates the conversation, so the agent
+    # should wait unless the user has EXPLICITLY set wait_for_user_first=True on
+    # the outbound path (which is an unrelated setting). We apply a mode-level
+    # default here in the worker: if the room was created as mode:"inbound" AND
+    # the agent has not explicitly opted into wait-first, we flip the default.
     mode = (cfg.get("mode") or "").strip()
+    explicit_wait = cfg.get("wait_for_user_first")  # None / False / True
+    if mode == "inbound" and not explicit_wait:
+        # Inbound default: wait for caller to speak first.
+        wait_for_user_first = True
+    else:
+        wait_for_user_first = bool(explicit_wait)
 
     # Fetch agent knowledge base documents from the api-server.
     # Stored as a list so we can do per-turn relevance selection (keyword scoring)
@@ -497,6 +508,17 @@ async def entrypoint(ctx: agents.JobContext):
 
     # Base instructions — no knowledge injected yet (done per-turn below).
     instructions = _build_persona(user_prompt, language, speaking_speed, auto_detect)
+
+    # For inbound calls where we wait for the caller to speak first, inject
+    # the configured greeting into the instructions so the agent opens its
+    # first response with the greeting text (after the caller has spoken).
+    if mode == "inbound" and wait_for_user_first and greeting:
+        instructions = instructions + (
+            f"\n\n# Opening response\n"
+            f"When you respond for the very first time, open with exactly: \"{greeting}\"\n"
+            f"Then continue addressing whatever the caller said."
+        )
+
     endpointing = ENDPOINTING_MS.get(sensitivity, ENDPOINTING_MS["medium"])
 
     logger.info(
