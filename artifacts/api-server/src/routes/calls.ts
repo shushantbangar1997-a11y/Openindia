@@ -87,9 +87,26 @@ const events: RequestHandler = async (req, res) => {
               outcome: result.outcome,
               sentiment: result.sentiment,
             });
+          } else {
+            // Persist a terminal fallback so the UI never shows a perpetual
+            // "Generating…" spinner (e.g. Groq key missing or parse error).
+            await updateCallByRoom(room, {
+              summary: "Summary unavailable.",
+              outcome: c.answered_at ? "completed" : "no-answer",
+              sentiment: "neutral",
+            });
           }
         } catch {
-          // non-fatal — call record persists without summary
+          // Last-resort: write fallback so UI doesn't spin forever.
+          try {
+            await updateCallByRoom(room, {
+              summary: "Summary unavailable.",
+              outcome: c.answered_at ? "completed" : "no-answer",
+              sentiment: "neutral",
+            });
+          } catch {
+            // truly non-fatal
+          }
         }
       });
     }
