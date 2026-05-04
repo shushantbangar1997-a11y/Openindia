@@ -275,13 +275,13 @@ router.delete("/agents/:id/documents/:docId", removeDoc);
 
 // ── Internal knowledge endpoint ─────────────────────────────────────────────
 // Returns all docs as structured JSON for per-turn relevance scoring in the worker.
-const INTERNAL_TOKEN = process.env["INTERNAL_API_TOKEN"] ?? "";
+import { getInternalToken } from "../lib/internal-token";
 
 const internalKnowledge: RequestHandler = async (req, res) => {
   const remote = req.socket.remoteAddress ?? "";
   const isLoopback = ["127.0.0.1", "::1", "::ffff:127.0.0.1"].includes(remote);
   const token = req.header("x-internal-token") ?? "";
-  if (!isLoopback || token !== INTERNAL_TOKEN) {
+  if (!isLoopback || token !== getInternalToken()) {
     res.status(403).json({ error: "forbidden" });
     return;
   }

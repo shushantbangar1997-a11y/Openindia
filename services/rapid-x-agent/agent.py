@@ -335,11 +335,36 @@ def _kb_budget(docs: list[dict], max_chars: int) -> list[dict]:
     return result
 
 
+def _kb_initial_context(docs: list[dict], budget: int = 2000) -> str:
+    """Build a brief KB summary injected before the first user utterance
+    so the agent has baseline contextual awareness from call start."""
+    parts: list[str] = []
+    remaining = budget
+    for d in docs[:6]:
+        snippet = (d.get("content") or "")[:300].strip()
+        if not snippet:
+            continue
+        entry = f"### {d.get('title', 'Note')}\n{snippet}"
+        if len(entry) > remaining:
+            break
+        parts.append(entry)
+        remaining -= len(entry)
+    if not parts:
+        return ""
+    return (
+        "\n\n# Knowledge base\n"
+        "Use the following information to answer caller questions accurately. "
+        "More detail will be injected per-turn as relevant.\n\n"
+        + "\n\n---\n\n".join(parts)
+    )
+
+
 class OutboundAssistant(Agent):
     def __init__(self, base_instructions: str, kb_docs: list[dict]) -> None:
-        super().__init__(instructions=base_instructions)
         self._base_instructions = base_instructions
         self._kb_docs = kb_docs
+        initial = base_instructions + _kb_initial_context(kb_docs) if kb_docs else base_instructions
+        super().__init__(instructions=initial)
 
     def refresh_knowledge(self, query: str) -> None:
         """Score knowledge docs against the caller's utterance and inject the

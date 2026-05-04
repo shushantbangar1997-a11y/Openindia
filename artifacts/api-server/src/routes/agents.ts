@@ -260,30 +260,17 @@ router.delete("/agents/:id", remove);
 // Internal-only: returns unredacted provider API keys for an agent.
 // Defense-in-depth: requires BOTH a loopback source IP AND a shared secret
 // header (INTERNAL_API_TOKEN) so a misconfigured proxy alone can't leak
-// keys. The worker reads the same env var at job start.
-import { writeFileSync, mkdirSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { randomBytes } from "node:crypto";
-import { join } from "node:path";
+// keys. The worker reads the same token at job start.
+import { getInternalToken } from "../lib/internal-token";
 
-const INTERNAL_TOKEN =
-  process.env["INTERNAL_API_TOKEN"] || randomBytes(24).toString("hex");
-process.env["INTERNAL_API_TOKEN"] = INTERNAL_TOKEN;
-// Persist the token to a tmp file so the LiveKit worker (separate process)
-// can read it without us having to share env vars across runtimes.
-try {
-  const dir = join(tmpdir(), "rapid-x");
-  mkdirSync(dir, { recursive: true });
-  writeFileSync(join(dir, "internal_token"), INTERNAL_TOKEN, { mode: 0o600 });
-} catch {
-  /* non-fatal — worker will fall back to env vars for keys */
-}
+// Ensure token is initialised and written to disk at startup time.
+getInternalToken();
 
 const internalKeys: RequestHandler = async (req, res) => {
   const remote = req.socket.remoteAddress ?? "";
   const isLoopback = ["127.0.0.1", "::1", "::ffff:127.0.0.1"].includes(remote);
   const token = req.header("x-internal-token") ?? "";
-  if (!isLoopback || token !== INTERNAL_TOKEN) {
+  if (!isLoopback || token !== getInternalToken()) {
     res.status(403).json({ error: "forbidden" });
     return;
   }
