@@ -45,7 +45,7 @@ router.post("/inbound/:agentId", async (req, res) => {
     const providedToken = String((req.query["t"] ?? req.query["token"]) ?? "").trim();
 
     if (!providedToken || providedToken !== expectedToken) {
-      req.log.warn({ agentId, providedToken }, "Inbound webhook: invalid or missing token");
+      req.log.warn({ agentId, hasToken: Boolean(providedToken) }, "Inbound webhook: invalid or missing token");
       return res.status(401).json({ error: "Unauthorized: missing or invalid token" });
     }
 

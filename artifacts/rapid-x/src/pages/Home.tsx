@@ -159,7 +159,8 @@ function InboundLines() {
           </div>
         )}
         {agents && agents.map((agent) => {
-          const webhookUrl = `${window.location.origin}${apiUrl(`/inbound/${agent.id}`)}`;
+          const base = `${window.location.origin}${apiUrl(`/inbound/${agent.id}`)}`;
+          const webhookUrl = agent.inbound_token ? `${base}?t=${agent.inbound_token}` : base;
           const isCopied = copiedId === agent.id;
           return (
             <div key={agent.id} className="px-5 py-3.5 flex items-center gap-3">
