@@ -177,12 +177,14 @@ async function load(): Promise<Store> {
       cache = {
         agents: Array.isArray(parsed.agents) ? parsed.agents.map(migrateAgent) : [],
         calls: Array.isArray(parsed.calls) ? parsed.calls : [],
+        settings: parsed.settings ?? undefined,
+        knowledge_docs: Array.isArray(parsed.knowledge_docs) ? parsed.knowledge_docs : [],
       };
     } catch {
-      cache = { agents: [], calls: [] };
+      cache = { agents: [], calls: [], knowledge_docs: [] };
     }
   } else {
-    cache = { agents: [], calls: [] };
+    cache = { agents: [], calls: [], knowledge_docs: [] };
   }
   if (cache.agents.length === 0) {
     cache.agents.push(defaultAgent());
