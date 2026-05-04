@@ -11,24 +11,18 @@ const router: IRouter = Router();
 /**
  * POST /inbound/:agentId
  *
- * Dual-mode inbound webhook endpoint:
+ * LiveKit SIP dispatch webhook for inbound calls.
  *
- * ── Mode A: LiveKit SIP Dispatch Webhook ─────────────────────────────────────
- * When a LiveKit SIP dispatch rule (type: "webhook") is configured, LiveKit
- * POSTs here when an inbound SIP call arrives. Body contains:
- *   { call_id, from, to, trunk_id }  (LiveKit SIP dispatch format)
- * We respond with:
+ * Configure a LiveKit SIP dispatch rule (type: "webhook") pointing to this
+ * endpoint. When an inbound SIP call arrives on the trunk, LiveKit POSTs:
+ *   { call_id, from, to, trunk_id }
+ *
+ * This handler pre-creates a LiveKit room (with agent metadata so the worker
+ * has its instructions before any participant joins) and responds with:
  *   { room_name, participant_identity, participant_name }
- * LiveKit then creates/joins the room and bridges the caller's audio in
- * automatically. No createSipParticipant call is needed on our side.
  *
- * ── Mode B: Generic SIP provider webhook ─────────────────────────────────────
- * For providers that POST to a custom URL (Twilio, Vonage, etc.) the body
- * uses their field names:
- *   { From, To, CallSid, ... }
- * We create the room so the LiveKit worker joins, then respond with JSON
- * acknowledging the call. Configure your SIP trunk's dispatch rule to route
- * the inbound SIP leg to the LiveKit SIP gateway separately.
+ * LiveKit bridges the caller's SIP audio into that room automatically; no
+ * further createSipParticipant call is needed.
  *
  * ── Security ─────────────────────────────────────────────────────────────────
  * All requests MUST include the per-agent HMAC token as a query parameter:
@@ -93,9 +87,9 @@ router.post("/inbound/:agentId", async (req, res) => {
     });
 
     // ── Create LiveKit room ───────────────────────────────────────────────────
-    // Pre-create the room with our metadata so the worker gets its instructions
-    // before any participant joins. For LiveKit dispatch, LiveKit will join the
-    // pre-existing room. For generic SIP, the worker joins when dispatched.
+    // Pre-create the room with agent metadata so the worker receives its full
+    // configuration before any participant joins. LiveKit will bridge the
+    // inbound SIP caller into this room after we return its name below.
     await getRoomService().createRoom({
       name: roomName,
       metadata,

@@ -103,6 +103,9 @@ function sanitize(body: any): any {
   if (out.inbound_enabled !== undefined) {
     out.inbound_enabled = Boolean(out.inbound_enabled);
   }
+  if (out.inbound_auto_greet !== undefined) {
+    out.inbound_auto_greet = Boolean(out.inbound_auto_greet);
+  }
   return out;
 }
 
