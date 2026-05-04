@@ -243,7 +243,8 @@ async def _wait_for_callee(
 
 
 def _build_persona(
-    user_prompt: str, language: str, speaking_speed: float, auto_detect: bool
+    user_prompt: str, language: str, speaking_speed: float, auto_detect: bool,
+    knowledge_text: str = "",
 ) -> str:
     """Stitch a small, opinionated language/style header onto the user prompt
     so the LLM consistently sounds human and stays in the right language."""
@@ -275,7 +276,16 @@ def _build_persona(
         f"them out loud.\n"
     )
     body = (user_prompt or DEFAULT_SYSTEM_PROMPT).strip()
-    return f"{header}\n# Your role\n{body}"
+    kb_section = ""
+    if knowledge_text.strip():
+        kb_section = (
+            f"\n\n# Knowledge base\n"
+            f"Use the information below to answer caller questions accurately. "
+            f"Only cite what is relevant. If the answer isn't in the knowledge base, "
+            f"say you'll find out and follow up.\n\n"
+            f"{knowledge_text}"
+        )
+    return f"{header}\n# Your role\n{body}{kb_section}"
 
 
 async def _publish_latency(room: rtc.Room, payload: dict) -> None:
@@ -365,7 +375,32 @@ async def entrypoint(ctx: agents.JobContext):
     wait_for_user_first = bool(cfg.get("wait_for_user_first"))
     mode = (cfg.get("mode") or "").strip()
 
-    instructions = _build_persona(user_prompt, language, speaking_speed, auto_detect)
+    # Fetch agent knowledge base documents from the api-server and inject them
+    # into the system prompt so the LLM can answer caller questions from them.
+    knowledge_text = ""
+    if agent_id:
+        try:
+            internal_token_for_kb = os.getenv("INTERNAL_API_TOKEN", "")
+            if not internal_token_for_kb:
+                try:
+                    import tempfile
+                    _tp = os.path.join(tempfile.gettempdir(), "rapid-x", "internal_token")
+                    with open(_tp, "r") as _f:
+                        internal_token_for_kb = _f.read().strip()
+                except Exception:
+                    pass
+            kb_url = f"{INTERNAL_API_URL}/api/internal/agents/{agent_id}/knowledge"
+            kb_req = urllib.request.Request(
+                kb_url, headers={"x-internal-token": internal_token_for_kb}
+            )
+            with urllib.request.urlopen(kb_req, timeout=3) as _r:
+                knowledge_text = (json.loads(_r.read()).get("knowledge_text") or "").strip()
+            if knowledge_text:
+                logger.info(f"Loaded knowledge base: {len(knowledge_text)} chars")
+        except Exception as _e:
+            logger.debug(f"Knowledge base fetch skipped: {_e}")
+
+    instructions = _build_persona(user_prompt, language, speaking_speed, auto_detect, knowledge_text)
     endpointing = ENDPOINTING_MS.get(sensitivity, ENDPOINTING_MS["medium"])
 
     logger.info(

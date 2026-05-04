@@ -80,6 +80,25 @@ export function useCatalog() {
   });
 }
 
+export type KnowledgeDoc = {
+  id: string;
+  agent_id: string;
+  title: string;
+  content: string;
+  source_type: "text" | "url" | "file";
+  source_url?: string;
+  created_at: string;
+};
+
+export function useKnowledgeDocs(agentId: string | null) {
+  return useQuery({
+    enabled: Boolean(agentId),
+    queryKey: ["knowledge-docs", agentId],
+    queryFn: () => apiGet<{ docs: KnowledgeDoc[] }>(`/agents/${agentId}/documents`).then((d) => d.docs),
+    staleTime: 10_000,
+  });
+}
+
 export function useCalls(intervalMs = 4000) {
   return useQuery({
     queryKey: ["calls"],

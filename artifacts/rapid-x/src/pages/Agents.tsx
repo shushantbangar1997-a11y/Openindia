@@ -25,8 +25,14 @@ import {
   Sliders,
   TestTube2,
   Radio,
+  BookOpen,
+  Link,
+  FileText,
+  Upload,
+  X,
+  Globe,
 } from "lucide-react";
-import { type Agent, useAgents, useCatalog, useSettings, useElevenLabsVoices } from "@/lib/agents";
+import { type Agent, type KnowledgeDoc, useAgents, useCatalog, useSettings, useElevenLabsVoices, useKnowledgeDocs } from "@/lib/agents";
 import { apiSend, apiUrl } from "@/lib/api";
 import {
   DEFAULT_LANGUAGE_ID,
@@ -57,7 +63,7 @@ const EMPTY: Draft = {
   template_id: null,
 };
 
-type Tab = "persona" | "voice" | "behavior";
+type Tab = "persona" | "voice" | "behavior" | "knowledge";
 
 export default function AgentsPage() {
   const qc = useQueryClient();
@@ -328,6 +334,7 @@ export default function AgentsPage() {
                 <SfTab active={tab === "persona"} onClick={() => setTab("persona")} icon={<Brain className="w-3.5 h-3.5" />} label="AI Model" />
                 <SfTab active={tab === "voice"} onClick={() => setTab("voice")} icon={<Volume2 className="w-3.5 h-3.5" />} label="Voice" />
                 <SfTab active={tab === "behavior"} onClick={() => setTab("behavior")} icon={<Sliders className="w-3.5 h-3.5" />} label="Call behavior" />
+                <SfTab active={tab === "knowledge"} onClick={() => setTab("knowledge")} icon={<BookOpen className="w-3.5 h-3.5" />} label="Knowledge" />
               </div>
             </div>
 
@@ -649,17 +656,22 @@ export default function AgentsPage() {
                   </>
                 )}
 
-                {/* Save footer */}
-                <div className="pt-2 pb-8">
-                  <button
-                    onClick={onSave}
-                    disabled={saving || !draft.name.trim()}
-                    className="flex items-center gap-2 px-5 py-2.5 bg-violet-600 hover:bg-violet-700 disabled:opacity-40 text-white text-sm font-semibold rounded-xl transition-colors shadow-sm shadow-violet-200"
-                  >
-                    {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
-                    {creating ? "Create assistant" : "Save changes"}
-                  </button>
-                </div>
+                {tab === "knowledge" && (
+                  <KnowledgeTab agentId={selectedId} creating={creating} />
+                )}
+
+                {tab !== "knowledge" && (
+                  <div className="pt-2 pb-8">
+                    <button
+                      onClick={onSave}
+                      disabled={saving || !draft.name.trim()}
+                      className="flex items-center gap-2 px-5 py-2.5 bg-violet-600 hover:bg-violet-700 disabled:opacity-40 text-white text-sm font-semibold rounded-xl transition-colors shadow-sm shadow-violet-200"
+                    >
+                      {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
+                      {creating ? "Create assistant" : "Save changes"}
+                    </button>
+                  </div>
+                )}
               </div>
             </div>
           </>
@@ -778,6 +790,265 @@ function VoicePreviewButton({ voiceId, provider, language, agentId }: {
       {loading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Play className="w-3.5 h-3.5" />}
       Preview
     </button>
+  );
+}
+
+type KbInputMode = "text" | "url" | "file";
+
+function KnowledgeTab({ agentId, creating }: { agentId: string | null; creating: boolean }) {
+  const qc = useQueryClient();
+  const { data: docs, isLoading } = useKnowledgeDocs(agentId);
+  const [mode, setMode] = useState<KbInputMode>("text");
+  const [title, setTitle] = useState("");
+  const [content, setContent] = useState("");
+  const [url, setUrl] = useState("");
+  const [adding, setAdding] = useState(false);
+  const [error, setError] = useState("");
+  const [deletingId, setDeletingId] = useState<string | null>(null);
+  const fileRef = useRef<HTMLInputElement | null>(null);
+
+  if (creating) {
+    return (
+      <SfSection title="Knowledge base" subtitle="Save the assistant first to add knowledge documents.">
+        <div className="py-4 text-center text-sm text-gray-400">
+          <BookOpen className="w-8 h-8 text-gray-200 mx-auto mb-2" />
+          Create the assistant to start adding knowledge.
+        </div>
+      </SfSection>
+    );
+  }
+
+  const invalidate = () => qc.invalidateQueries({ queryKey: ["knowledge-docs", agentId] });
+
+  const onAddText = async () => {
+    if (!title.trim() || !content.trim()) { setError("Title and content are required."); return; }
+    setAdding(true); setError("");
+    try {
+      await fetch(apiUrl(`/agents/${agentId}/documents/text`), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ title: title.trim(), content: content.trim() }),
+      }).then(async (r) => { if (!r.ok) throw new Error((await r.json()).error); });
+      setTitle(""); setContent("");
+      await invalidate();
+    } catch (e: any) { setError(e?.message || "Failed to add"); }
+    finally { setAdding(false); }
+  };
+
+  const onAddUrl = async () => {
+    if (!url.trim()) { setError("URL is required."); return; }
+    setAdding(true); setError("");
+    try {
+      await fetch(apiUrl(`/agents/${agentId}/documents/url`), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ url: url.trim() }),
+      }).then(async (r) => { if (!r.ok) throw new Error((await r.json()).error); });
+      setUrl("");
+      await invalidate();
+    } catch (e: any) { setError(e?.message || "Failed to scrape URL"); }
+    finally { setAdding(false); }
+  };
+
+  const onAddFile = async (f: File) => {
+    setAdding(true); setError("");
+    try {
+      const form = new FormData();
+      form.append("file", f);
+      await fetch(apiUrl(`/agents/${agentId}/documents/file`), {
+        method: "POST",
+        body: form,
+      }).then(async (r) => { if (!r.ok) throw new Error((await r.json()).error); });
+      await invalidate();
+    } catch (e: any) { setError(e?.message || "Upload failed"); }
+    finally { setAdding(false); }
+  };
+
+  const onDelete = async (docId: string) => {
+    setDeletingId(docId);
+    try {
+      await fetch(apiUrl(`/agents/${agentId}/documents/${docId}`), { method: "DELETE" });
+      await invalidate();
+    } finally { setDeletingId(null); }
+  };
+
+  const modeButtons: { id: KbInputMode; label: string; icon: React.ReactNode }[] = [
+    { id: "text", label: "Text snippet", icon: <FileText className="w-3.5 h-3.5" /> },
+    { id: "url", label: "Scrape URL", icon: <Globe className="w-3.5 h-3.5" /> },
+    { id: "file", label: "Upload file", icon: <Upload className="w-3.5 h-3.5" /> },
+  ];
+
+  return (
+    <div className="space-y-6 pb-8">
+      <SfSection
+        title="Knowledge base"
+        subtitle="Documents the agent can reference to answer caller questions accurately."
+      >
+        <div className="flex gap-1.5 mb-4">
+          {modeButtons.map((b) => (
+            <button
+              key={b.id}
+              onClick={() => { setMode(b.id); setError(""); }}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${
+                mode === b.id
+                  ? "bg-violet-600 text-white"
+                  : "bg-gray-100 text-gray-500 hover:bg-gray-200"
+              }`}
+            >
+              {b.icon} {b.label}
+            </button>
+          ))}
+        </div>
+
+        {mode === "text" && (
+          <div className="space-y-3">
+            <SfField label="Title">
+              <input
+                value={title}
+                onChange={(e) => setTitle(e.target.value)}
+                placeholder="e.g. Pricing FAQ, Refund Policy, Product Overview…"
+                className="w-full px-3.5 py-2.5 bg-white border border-gray-200 rounded-xl text-sm text-gray-800 placeholder:text-gray-300 focus:outline-none focus:ring-2 focus:ring-violet-500/20 focus:border-violet-400"
+              />
+            </SfField>
+            <SfField label="Content">
+              <textarea
+                value={content}
+                onChange={(e) => setContent(e.target.value)}
+                rows={8}
+                placeholder="Paste or type the information you want the agent to know…"
+                className="w-full px-3.5 py-3 bg-white border border-gray-200 rounded-xl text-sm text-gray-800 placeholder:text-gray-300 focus:outline-none focus:ring-2 focus:ring-violet-500/20 focus:border-violet-400 resize-y"
+              />
+            </SfField>
+            <button
+              onClick={onAddText}
+              disabled={adding || !title.trim() || !content.trim()}
+              className="flex items-center gap-2 px-4 py-2 bg-violet-600 hover:bg-violet-700 disabled:opacity-40 text-white text-xs font-semibold rounded-lg transition-colors"
+            >
+              {adding ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Plus className="w-3.5 h-3.5" />}
+              Add document
+            </button>
+          </div>
+        )}
+
+        {mode === "url" && (
+          <div className="space-y-3">
+            <SfField label="Page URL">
+              <input
+                value={url}
+                onChange={(e) => setUrl(e.target.value)}
+                placeholder="https://your-site.com/faq"
+                className="w-full px-3.5 py-2.5 bg-white border border-gray-200 rounded-xl text-sm text-gray-800 placeholder:text-gray-300 focus:outline-none focus:ring-2 focus:ring-violet-500/20 focus:border-violet-400 font-mono"
+              />
+            </SfField>
+            <p className="text-[11px] text-gray-400">
+              The server will fetch and extract text from this page. Works best with simple, text-heavy pages.
+            </p>
+            <button
+              onClick={onAddUrl}
+              disabled={adding || !url.trim()}
+              className="flex items-center gap-2 px-4 py-2 bg-violet-600 hover:bg-violet-700 disabled:opacity-40 text-white text-xs font-semibold rounded-lg transition-colors"
+            >
+              {adding ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Globe className="w-3.5 h-3.5" />}
+              Scrape & add
+            </button>
+          </div>
+        )}
+
+        {mode === "file" && (
+          <div className="space-y-3">
+            <div
+              onClick={() => fileRef.current?.click()}
+              className="border-2 border-dashed border-gray-200 rounded-xl p-8 text-center cursor-pointer hover:border-violet-400 hover:bg-violet-50/30 transition-colors"
+            >
+              <Upload className="w-6 h-6 text-gray-300 mx-auto mb-2" />
+              <p className="text-sm font-medium text-gray-500 mb-1">Click to upload</p>
+              <p className="text-[11px] text-gray-400">Supported: .txt, .md, .csv · Max 2 MB</p>
+              {adding && (
+                <div className="flex items-center justify-center gap-2 mt-3 text-xs text-violet-600">
+                  <Loader2 className="w-3.5 h-3.5 animate-spin" /> Uploading…
+                </div>
+              )}
+            </div>
+            <input
+              ref={fileRef}
+              type="file"
+              accept=".txt,.md,.csv"
+              className="hidden"
+              onChange={(e) => {
+                const f = e.target.files?.[0];
+                if (f) onAddFile(f);
+                e.target.value = "";
+              }}
+            />
+          </div>
+        )}
+
+        {error && (
+          <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-red-50 border border-red-200 text-red-600 text-xs">
+            <AlertCircle className="w-3.5 h-3.5 shrink-0" />
+            {error}
+          </div>
+        )}
+      </SfSection>
+
+      <SfSection title="Saved documents" subtitle={`${docs?.length ?? 0} document${(docs?.length ?? 0) === 1 ? "" : "s"} in this agent's knowledge base`}>
+        {isLoading && (
+          <div className="flex items-center gap-2 text-xs text-gray-400 py-2">
+            <Loader2 className="w-3.5 h-3.5 animate-spin" /> Loading…
+          </div>
+        )}
+        {!isLoading && (!docs || docs.length === 0) && (
+          <div className="py-6 text-center">
+            <BookOpen className="w-8 h-8 text-gray-200 mx-auto mb-2" />
+            <p className="text-xs text-gray-400">No documents yet. Add your first one above.</p>
+          </div>
+        )}
+        {docs && docs.length > 0 && (
+          <div className="space-y-2">
+            {docs.map((doc) => (
+              <div
+                key={doc.id}
+                className="flex items-start gap-3 px-3.5 py-3 rounded-xl bg-gray-50 border border-gray-200 group"
+              >
+                <div className="shrink-0 mt-0.5 w-6 h-6 rounded-md bg-white border border-gray-200 flex items-center justify-center">
+                  {doc.source_type === "url" ? (
+                    <Globe className="w-3 h-3 text-gray-400" />
+                  ) : doc.source_type === "file" ? (
+                    <FileText className="w-3 h-3 text-gray-400" />
+                  ) : (
+                    <BookOpen className="w-3 h-3 text-gray-400" />
+                  )}
+                </div>
+                <div className="flex-1 min-w-0">
+                  <div className="text-sm font-medium text-gray-800 truncate">{doc.title}</div>
+                  <div className="text-[11px] text-gray-400 mt-0.5 truncate">
+                    {doc.source_type === "url" && doc.source_url ? (
+                      <a href={doc.source_url} target="_blank" rel="noreferrer" className="hover:text-violet-500 underline">
+                        {doc.source_url}
+                      </a>
+                    ) : (
+                      <span>{doc.content.slice(0, 80)}{doc.content.length > 80 ? "…" : ""}</span>
+                    )}
+                  </div>
+                  <div className="text-[10px] text-gray-300 mt-1">
+                    {doc.source_type.toUpperCase()} · {new Date(doc.created_at).toLocaleDateString()}
+                    {" · "}{Math.ceil(doc.content.length / 5)} words
+                  </div>
+                </div>
+                <button
+                  onClick={() => onDelete(doc.id)}
+                  disabled={deletingId === doc.id}
+                  className="shrink-0 p-1.5 rounded-lg text-gray-300 hover:text-red-500 hover:bg-red-50 transition-colors opacity-0 group-hover:opacity-100"
+                  aria-label="Delete document"
+                >
+                  {deletingId === doc.id ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <X className="w-3.5 h-3.5" />}
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+      </SfSection>
+    </div>
   );
 }
 

@@ -57,10 +57,21 @@ export type GlobalSettings = {
   cartesia_api_key?: string;
 };
 
+export type KnowledgeDoc = {
+  id: string;
+  agent_id: string;
+  title: string;
+  content: string;
+  source_type: "text" | "url" | "file";
+  source_url?: string;
+  created_at: string;
+};
+
 type Store = {
   agents: Agent[];
   calls: CallRecord[];
   settings?: GlobalSettings;
+  knowledge_docs?: KnowledgeDoc[];
 };
 
 const DATA_DIR = path.resolve(process.cwd(), "data");
@@ -367,6 +378,47 @@ export function buildAgentMetadata(
     interruption_sensitivity: agent.interruption_sensitivity,
     wait_for_user_first: agent.wait_for_user_first,
   });
+}
+
+// ── Knowledge Docs ──────────────────────────────────────
+export async function listKnowledgeDocs(agentId: string): Promise<KnowledgeDoc[]> {
+  const s = await load();
+  return (s.knowledge_docs ?? [])
+    .filter((d) => d.agent_id === agentId)
+    .sort((a, b) => (a.created_at < b.created_at ? 1 : -1));
+}
+
+export async function createKnowledgeDoc(
+  input: Omit<KnowledgeDoc, "id" | "created_at">,
+): Promise<KnowledgeDoc> {
+  const s = await load();
+  const doc: KnowledgeDoc = {
+    id: newId("kdoc"),
+    ...input,
+    created_at: nowIso(),
+  };
+  if (!s.knowledge_docs) s.knowledge_docs = [];
+  s.knowledge_docs.push(doc);
+  await persist();
+  return doc;
+}
+
+export async function deleteKnowledgeDoc(id: string, agentId: string): Promise<boolean> {
+  const s = await load();
+  if (!s.knowledge_docs) return false;
+  const before = s.knowledge_docs.length;
+  s.knowledge_docs = s.knowledge_docs.filter((d) => !(d.id === id && d.agent_id === agentId));
+  if (s.knowledge_docs.length === before) return false;
+  await persist();
+  return true;
+}
+
+export async function getAgentKnowledgeText(agentId: string): Promise<string> {
+  const docs = await listKnowledgeDocs(agentId);
+  if (docs.length === 0) return "";
+  return docs
+    .map((d) => `### ${d.title}\n${d.content.slice(0, 4000)}`)
+    .join("\n\n---\n\n");
 }
 
 // Strip secrets before returning agents over the HTTP API.
