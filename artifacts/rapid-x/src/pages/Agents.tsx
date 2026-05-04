@@ -666,7 +666,10 @@ export default function AgentsPage() {
                         hint="When on, configure your SIP provider to POST to the webhook URL below on incoming calls."
                       />
                       {!creating && selectedId && draft.inbound_enabled && (
-                        <InboundWebhookUrl agentId={selectedId} />
+                        <InboundWebhookUrl
+                          agentId={selectedId}
+                          token={agents.find((x) => x.id === selectedId)?.inbound_token}
+                        />
                       )}
                       {!creating && selectedId && !draft.inbound_enabled && (
                         <p className="text-[11px] text-gray-400">
@@ -1165,9 +1168,10 @@ function ApiKeyOnboarding({ provider, agentId, onSaved }: {
   );
 }
 
-function InboundWebhookUrl({ agentId }: { agentId: string }) {
+function InboundWebhookUrl({ agentId, token }: { agentId: string; token?: string }) {
   const [copied, setCopied] = useState(false);
-  const webhookUrl = `${window.location.origin}${apiUrl(`/inbound/${agentId}`)}`;
+  const base = `${window.location.origin}${apiUrl(`/inbound/${agentId}`)}`;
+  const webhookUrl = token ? `${base}?t=${token}` : base;
   const onCopy = async () => {
     try {
       await navigator.clipboard.writeText(webhookUrl);
@@ -1197,7 +1201,7 @@ function InboundWebhookUrl({ agentId }: { agentId: string }) {
         </button>
       </div>
       <p className="text-[11px] text-blue-600 leading-relaxed">
-        Paste this URL into your SIP provider's inbound webhook settings. When a call arrives, the provider posts here and your agent picks it up automatically.
+        POST this URL from your SIP provider's inbound webhook or configure it as a LiveKit SIP dispatch rule. The <code className="bg-blue-100 px-0.5 rounded">?t=</code> token authenticates the request.
       </p>
     </div>
   );

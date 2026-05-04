@@ -18,6 +18,7 @@ export type Agent = {
   interruption_sensitivity: "low" | "medium" | "high";
   wait_for_user_first: boolean;
   inbound_enabled: boolean;
+  inbound_token?: string;
   template_id: string | null;
   created_at: string;
   updated_at: string;

@@ -134,11 +134,12 @@ function CallDetail({ callId }: { callId: string }) {
         </div>
 
         {/* Meta grid */}
-        <div className="grid grid-cols-4 gap-3 mt-4">
+        <div className="grid grid-cols-5 gap-3 mt-4">
           <MetaCard icon={<Calendar className="w-3.5 h-3.5" />} label="Started" value={new Date(c.started_at).toLocaleString()} />
           <MetaCard icon={<Clock className="w-3.5 h-3.5" />} label="Duration" value={formatDuration(c)} />
           <MetaCard icon={<Bot className="w-3.5 h-3.5" />} label="Agent" value={c.agent_name ?? "—"} />
           <MetaCard icon={<Activity className="w-3.5 h-3.5" />} label="Direction" value={c.direction === "inbound" ? "Inbound" : "Outbound"} />
+          <MetaCard icon={<Activity className="w-3.5 h-3.5" />} label="End reason" value={c.end_reason ?? "—"} />
         </div>
       </div>
 

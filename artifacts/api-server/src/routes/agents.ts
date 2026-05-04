@@ -7,15 +7,21 @@ import {
   redactAgent,
   updateAgent,
   getSettings,
+  type Agent,
 } from "../lib/db";
 import { LANGUAGES, VOICES } from "../lib/voices";
 import { PROMPT_TEMPLATES } from "../lib/prompt-templates";
+import { generateInboundToken } from "../lib/livekit";
+
+function withInboundToken(a: Agent) {
+  return { ...redactAgent(a), inbound_token: generateInboundToken(a.id) };
+}
 
 const router: IRouter = Router();
 
 const list: RequestHandler = async (_req, res) => {
   const agents = await listAgents();
-  res.json({ agents: agents.map(redactAgent) });
+  res.json({ agents: agents.map(withInboundToken) });
 };
 
 const getOne: RequestHandler = async (req, res) => {
@@ -24,7 +30,7 @@ const getOne: RequestHandler = async (req, res) => {
     res.status(404).json({ error: "Agent not found" });
     return;
   }
-  res.json({ agent: redactAgent(a) });
+  res.json({ agent: withInboundToken(a) });
 };
 
 const create: RequestHandler = async (req, res) => {
@@ -34,7 +40,7 @@ const create: RequestHandler = async (req, res) => {
     return;
   }
   const a = await createAgent({ ...sanitize(body), name: body.name.trim() });
-  res.status(201).json({ agent: redactAgent(a) });
+  res.status(201).json({ agent: withInboundToken(a) });
 };
 
 // One-time provider-key paste flow. Lets users paste a key in the editor
@@ -62,7 +68,7 @@ const setProviderKey: RequestHandler = async (req, res) => {
   }
   const next = { ...(existing.provider_api_keys ?? {}), [provider]: key };
   const updated = await updateAgent(id, { provider_api_keys: next });
-  res.json({ agent: updated ? redactAgent(updated) : null });
+  res.json({ agent: updated ? withInboundToken(updated) : null });
 };
 
 function sanitize(body: any): any {
@@ -215,7 +221,7 @@ const patch: RequestHandler = async (req, res) => {
     res.status(404).json({ error: "Agent not found" });
     return;
   }
-  res.json({ agent: redactAgent(updated) });
+  res.json({ agent: withInboundToken(updated) });
 };
 
 const remove: RequestHandler = async (req, res) => {

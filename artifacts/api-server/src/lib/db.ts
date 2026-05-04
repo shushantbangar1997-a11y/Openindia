@@ -414,6 +414,12 @@ export function buildAgentMetadata(
   const stt_language = agent.auto_detect_language
     ? "multi"
     : (lang?.stt_language ?? agent.language);
+  // For inbound calls the human initiates the conversation, so the agent must
+  // always wait for the caller to speak first — regardless of the agent's
+  // default setting. Outbound calls retain the per-agent setting as-is.
+  const wait_for_user_first =
+    extra.mode === "inbound" ? true : agent.wait_for_user_first;
+
   return JSON.stringify({
     ...(extra.mode ? { mode: extra.mode } : {}),
     ...(extra.phone_number ? { phone_number: extra.phone_number } : {}),
@@ -434,7 +440,7 @@ export function buildAgentMetadata(
     // (which is readable by every participant). The worker fetches them
     // server-to-server from /api/internal/agents/:id/keys at job start.
     interruption_sensitivity: agent.interruption_sensitivity,
-    wait_for_user_first: agent.wait_for_user_first,
+    wait_for_user_first,
   });
 }
 
