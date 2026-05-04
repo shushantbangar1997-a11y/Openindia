@@ -74,6 +74,8 @@ export default function AgentsPage() {
   const [testOpen, setTestOpen] = useState(false);
   const [tab, setTab] = useState<Tab>("persona");
   const [search, setSearch] = useState("");
+  const [voiceSearch, setVoiceSearch] = useState("");
+  const [voiceGender, setVoiceGender] = useState<"all" | "female" | "male">("all");
 
   useEffect(() => {
     if (!selectedId && !creating && agents.length > 0) {
@@ -156,6 +158,20 @@ export default function AgentsPage() {
       setDraft((d) => ({ ...d, voice_id: availableVoices[0]!.id }));
     }
   }, [draft.tts_provider, draft.language, availableVoices.length]);
+
+  useEffect(() => {
+    setVoiceSearch("");
+    setVoiceGender("all");
+  }, [draft.tts_provider, draft.language]);
+
+  const filteredVoices = useMemo(() => {
+    const q = voiceSearch.trim().toLowerCase();
+    return availableVoices.filter((v) => {
+      if (voiceGender !== "all" && v.gender !== voiceGender) return false;
+      if (q && !v.label.toLowerCase().includes(q)) return false;
+      return true;
+    });
+  }, [availableVoices, voiceSearch, voiceGender]);
 
   const providerInfo = catalog.providers[draft.tts_provider];
   const filteredAgents = agents.filter((a) =>
@@ -451,6 +467,55 @@ export default function AgentsPage() {
 
                       <div className="mt-3">
                         <SfField label="Voice">
+                          {!elevenLabsLoading && !elevenLabsError && availableVoices.length > 0 && (
+                            <div className="space-y-2 mb-2">
+                              <div className="relative">
+                                <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-gray-400 pointer-events-none" />
+                                <input
+                                  value={voiceSearch}
+                                  onChange={(e) => setVoiceSearch(e.target.value)}
+                                  placeholder="Search voices…"
+                                  className="w-full pl-8 pr-3 py-2 bg-gray-50 border border-gray-200 rounded-xl text-xs text-gray-700 placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-violet-500/20 focus:border-violet-400"
+                                />
+                              </div>
+                              <div className="flex gap-1.5">
+                                {(["all", "female", "male"] as const).map((g) => (
+                                  <button
+                                    key={g}
+                                    type="button"
+                                    onClick={() => setVoiceGender(g)}
+                                    className={`px-3 py-1 rounded-lg text-xs font-medium transition-colors capitalize ${
+                                      voiceGender === g
+                                        ? "bg-violet-600 text-white"
+                                        : "bg-gray-100 text-gray-500 hover:bg-gray-200"
+                                    }`}
+                                  >
+                                    {g === "all" ? "All" : g === "female" ? "Female" : "Male"}
+                                  </button>
+                                ))}
+                                {availableVoices.length > 0 && (
+                                  <span className="ml-auto text-[11px] text-gray-400 self-center">
+                                    {filteredVoices.length} of {availableVoices.length}
+                                  </span>
+                                )}
+                              </div>
+                              {draft.voice_id &&
+                                availableVoices.find((v) => v.id === draft.voice_id) &&
+                                !filteredVoices.find((v) => v.id === draft.voice_id) && (
+                                  <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-amber-50 border border-amber-200 text-amber-700 text-xs">
+                                    <AlertCircle className="w-3.5 h-3.5 shrink-0" />
+                                    <span>Current voice is hidden by your filters.</span>
+                                    <button
+                                      type="button"
+                                      onClick={() => { setVoiceSearch(""); setVoiceGender("all"); }}
+                                      className="ml-auto font-semibold underline hover:text-amber-900"
+                                    >
+                                      Clear filters
+                                    </button>
+                                  </div>
+                                )}
+                            </div>
+                          )}
                           <div className="flex gap-2">
                             {elevenLabsLoading && draft.tts_provider === "elevenlabs" ? (
                               <div className="flex-1 flex items-center gap-2 px-3.5 py-2.5 bg-white border border-gray-200 rounded-xl text-sm text-gray-400">
@@ -467,10 +532,10 @@ export default function AgentsPage() {
                                 value={draft.voice_id}
                                 onChange={(v) => setDraft({ ...draft, voice_id: v })}
                               >
-                                {availableVoices.length === 0 ? (
-                                  <option value="">No voices for this combination</option>
+                                {filteredVoices.length === 0 ? (
+                                  <option value="">No voices match your filter</option>
                                 ) : (
-                                  availableVoices.map((v) => (
+                                  filteredVoices.map((v) => (
                                     <option key={v.id} value={v.id}>{v.label}</option>
                                   ))
                                 )}
