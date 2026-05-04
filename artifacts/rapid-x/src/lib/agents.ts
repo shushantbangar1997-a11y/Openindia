@@ -22,6 +22,9 @@ export type Agent = {
   updated_at: string;
 };
 
+export type CallOutcome = "completed" | "no-answer" | "voicemail" | "escalated";
+export type CallSentiment = "positive" | "neutral" | "negative";
+
 export type CallRecord = {
   id: string;
   agent_id: string | null;
@@ -34,6 +37,16 @@ export type CallRecord = {
   ended_at: string | null;
   end_reason: string | null;
   transcript: { role: "user" | "assistant"; text: string; ts: string }[];
+  summary?: string;
+  outcome?: CallOutcome;
+  sentiment?: CallSentiment;
+};
+
+export type CallStats = {
+  total: number;
+  answered: number;
+  avg_duration_ms: number;
+  active_now: number;
 };
 
 export type GlobalSettings = {
@@ -114,5 +127,14 @@ export function useCall(id: string | null, intervalMs = 3000) {
     queryKey: ["call", id],
     queryFn: () => apiGet<{ call: CallRecord }>(`/calls/${id}`),
     refetchInterval: intervalMs,
+  });
+}
+
+export function useCallStats(intervalMs = 10_000) {
+  return useQuery({
+    queryKey: ["call-stats"],
+    queryFn: () => apiGet<CallStats>("/calls/stats"),
+    refetchInterval: intervalMs,
+    staleTime: 5_000,
   });
 }

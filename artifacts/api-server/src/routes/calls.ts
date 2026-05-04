@@ -5,12 +5,35 @@ import {
   listCalls,
   updateCallByRoom,
 } from "../lib/db";
+import { summariseCall } from "../lib/summarize";
 
 const router: IRouter = Router();
 
 const list: RequestHandler = async (_req, res) => {
   const calls = await listCalls();
   res.json({ calls });
+};
+
+const stats: RequestHandler = async (_req, res) => {
+  const calls = await listCalls(10_000);
+  const total = calls.length;
+  const answered = calls.filter((c) => c.answered_at !== null).length;
+  const active_now = calls.filter(
+    (c) => c.status === "ringing" || c.status === "answered",
+  ).length;
+
+  const durations = calls
+    .filter((c) => c.answered_at !== null && c.ended_at !== null)
+    .map(
+      (c) =>
+        new Date(c.ended_at!).getTime() - new Date(c.answered_at!).getTime(),
+    );
+  const avg_duration_ms =
+    durations.length > 0
+      ? Math.round(durations.reduce((a, b) => a + b, 0) / durations.length)
+      : 0;
+
+  res.json({ total, answered, avg_duration_ms, active_now });
 };
 
 const getOne: RequestHandler = async (req, res) => {
@@ -51,6 +74,24 @@ const events: RequestHandler = async (req, res) => {
       return;
     }
     res.json({ call: c });
+
+    // Fire-and-forget AI summary — only for ended calls with transcript content.
+    if (type === "ended" && c.transcript.length > 0 && !c.summary) {
+      setImmediate(async () => {
+        try {
+          const result = await summariseCall(c);
+          if (result) {
+            await updateCallByRoom(room, {
+              summary: result.summary,
+              outcome: result.outcome,
+              sentiment: result.sentiment,
+            });
+          }
+        } catch {
+          // non-fatal — call record persists without summary
+        }
+      });
+    }
     return;
   }
 
@@ -76,7 +117,9 @@ const transcript: RequestHandler = async (req, res) => {
   res.json({ ok: true });
 };
 
+// Stats must be registered before the /:id wildcard to avoid being swallowed.
 router.get("/calls", list);
+router.get("/calls/stats", stats);
 router.get("/calls/:id", getOne);
 router.post("/calls/by-room/:room/events", events);
 router.post("/calls/by-room/:room/transcript", transcript);

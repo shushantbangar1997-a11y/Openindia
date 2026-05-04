@@ -38,6 +38,9 @@ export type TranscriptTurn = {
   ts: string;
 };
 
+export type CallOutcome = "completed" | "no-answer" | "voicemail" | "escalated";
+export type CallSentiment = "positive" | "neutral" | "negative";
+
 export type CallRecord = {
   id: string;
   agent_id: string | null;
@@ -50,6 +53,10 @@ export type CallRecord = {
   ended_at: string | null;
   end_reason: string | null;
   transcript: TranscriptTurn[];
+  // AI-generated after call ends
+  summary?: string;
+  outcome?: CallOutcome;
+  sentiment?: CallSentiment;
 };
 
 export type GlobalSettings = {
