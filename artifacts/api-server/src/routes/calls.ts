@@ -7,6 +7,11 @@ import {
 } from "../lib/db";
 import { summariseCall } from "../lib/summarize";
 
+// Lightweight in-memory guard: tracks rooms whose summary job is in flight.
+// Prevents duplicate LLM calls when repeated "ended" webhooks arrive before
+// the async write completes (the persisted !c.summary check uses a stale snapshot).
+const _summarising = new Set<string>();
+
 const router: IRouter = Router();
 
 const list: RequestHandler = async (_req, res) => {
@@ -77,7 +82,9 @@ const events: RequestHandler = async (req, res) => {
 
     // Fire-and-forget AI summary for all ended calls (summariseCall handles
     // empty transcripts with a no-answer fallback, so no transcript gate here).
-    if (type === "ended" && !c.summary) {
+    // _summarising guards against duplicate LLM calls from repeated webhooks.
+    if (type === "ended" && !c.summary && !_summarising.has(room)) {
+      _summarising.add(room);
       setImmediate(async () => {
         try {
           const result = await summariseCall(c);
@@ -107,6 +114,8 @@ const events: RequestHandler = async (req, res) => {
           } catch {
             // truly non-fatal
           }
+        } finally {
+          _summarising.delete(room);
         }
       });
     }
