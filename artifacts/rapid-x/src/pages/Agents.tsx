@@ -1003,50 +1003,77 @@ function KnowledgeTab({ agentId, creating }: { agentId: string | null; creating:
             <p className="text-xs text-gray-400">No documents yet. Add your first one above.</p>
           </div>
         )}
-        {docs && docs.length > 0 && (
+        {docs && docs.length > 0 && (() => {
+          const KB_BUDGET = 12000;
+          const totalChars = docs.reduce((acc, d) => acc + (d.size ?? d.content?.length ?? 0), 0);
+          const pct = Math.min(100, Math.round((totalChars / KB_BUDGET) * 100));
+          const barColor = pct >= 90 ? "bg-red-500" : pct >= 70 ? "bg-amber-500" : "bg-violet-500";
+          return (
+          <>
+          <div className="mb-3 space-y-1.5">
+            <div className="flex items-center justify-between text-[11px]">
+              <span className="text-gray-400 font-medium">Context usage</span>
+              <span className={`font-semibold ${pct >= 90 ? "text-red-600" : pct >= 70 ? "text-amber-600" : "text-violet-600"}`}>
+                {totalChars.toLocaleString()} / {KB_BUDGET.toLocaleString()} chars ({pct}%)
+              </span>
+            </div>
+            <div className="w-full h-1.5 bg-gray-100 rounded-full overflow-hidden">
+              <div className={`h-full rounded-full transition-all ${barColor}`} style={{ width: `${pct}%` }} />
+            </div>
+            <p className="text-[10px] text-gray-400">
+              Top 3 most relevant docs are injected per turn — within a 4,000-char budget.
+            </p>
+          </div>
           <div className="space-y-2">
-            {docs.map((doc) => (
-              <div
-                key={doc.id}
-                className="flex items-start gap-3 px-3.5 py-3 rounded-xl bg-gray-50 border border-gray-200 group"
-              >
-                <div className="shrink-0 mt-0.5 w-6 h-6 rounded-md bg-white border border-gray-200 flex items-center justify-center">
-                  {doc.source_type === "url" ? (
-                    <Globe className="w-3 h-3 text-gray-400" />
-                  ) : doc.source_type === "file" ? (
-                    <FileText className="w-3 h-3 text-gray-400" />
-                  ) : (
-                    <BookOpen className="w-3 h-3 text-gray-400" />
-                  )}
-                </div>
-                <div className="flex-1 min-w-0">
-                  <div className="text-sm font-medium text-gray-800 truncate">{doc.title}</div>
-                  <div className="text-[11px] text-gray-400 mt-0.5 truncate">
-                    {doc.source_type === "url" && doc.source_url ? (
-                      <a href={doc.source_url} target="_blank" rel="noreferrer" className="hover:text-violet-500 underline">
-                        {doc.source_url}
-                      </a>
+            {docs.map((doc) => {
+              const sizeBytes = doc.size ?? new TextEncoder().encode(doc.content ?? "").length;
+              const sizeLabel = sizeBytes >= 1024
+                ? `${(sizeBytes / 1024).toFixed(1)} KB`
+                : `${sizeBytes} B`;
+              return (
+                <div
+                  key={doc.id}
+                  className="flex items-start gap-3 px-3.5 py-3 rounded-xl bg-gray-50 border border-gray-200 group"
+                >
+                  <div className="shrink-0 mt-0.5 w-6 h-6 rounded-md bg-white border border-gray-200 flex items-center justify-center">
+                    {doc.source_type === "url" ? (
+                      <Globe className="w-3 h-3 text-gray-400" />
+                    ) : doc.source_type === "file" ? (
+                      <FileText className="w-3 h-3 text-gray-400" />
                     ) : (
-                      <span>{doc.content.slice(0, 80)}{doc.content.length > 80 ? "…" : ""}</span>
+                      <BookOpen className="w-3 h-3 text-gray-400" />
                     )}
                   </div>
-                  <div className="text-[10px] text-gray-300 mt-1">
-                    {doc.source_type.toUpperCase()} · {new Date(doc.created_at).toLocaleDateString()}
-                    {" · "}{Math.ceil(doc.content.length / 5)} words
+                  <div className="flex-1 min-w-0">
+                    <div className="text-sm font-medium text-gray-800 truncate">{doc.title}</div>
+                    <div className="text-[11px] text-gray-400 mt-0.5 truncate">
+                      {doc.source_type === "url" && doc.source_url ? (
+                        <a href={doc.source_url} target="_blank" rel="noreferrer" className="hover:text-violet-500 underline">
+                          {doc.source_url}
+                        </a>
+                      ) : (
+                        <span>{doc.content.slice(0, 80)}{doc.content.length > 80 ? "…" : ""}</span>
+                      )}
+                    </div>
+                    <div className="text-[10px] text-gray-300 mt-1">
+                      {doc.source_type.toUpperCase()} · {new Date(doc.created_at).toLocaleDateString()} · {sizeLabel}
+                    </div>
                   </div>
+                  <button
+                    onClick={() => onDelete(doc.id)}
+                    disabled={deletingId === doc.id}
+                    className="shrink-0 p-1.5 rounded-lg text-gray-300 hover:text-red-500 hover:bg-red-50 transition-colors opacity-0 group-hover:opacity-100"
+                    aria-label="Delete document"
+                  >
+                    {deletingId === doc.id ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <X className="w-3.5 h-3.5" />}
+                  </button>
                 </div>
-                <button
-                  onClick={() => onDelete(doc.id)}
-                  disabled={deletingId === doc.id}
-                  className="shrink-0 p-1.5 rounded-lg text-gray-300 hover:text-red-500 hover:bg-red-50 transition-colors opacity-0 group-hover:opacity-100"
-                  aria-label="Delete document"
-                >
-                  {deletingId === doc.id ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <X className="w-3.5 h-3.5" />}
-                </button>
-              </div>
-            ))}
+              );
+            })}
           </div>
-        )}
+          </>
+          );
+        })()}
       </SfSection>
     </div>
   );

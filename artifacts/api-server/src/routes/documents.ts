@@ -1,17 +1,55 @@
 import { Router, type IRouter, type RequestHandler } from "express";
 import multer from "multer";
+import { lookup as dnsLookup } from "node:dns/promises";
 import {
   createKnowledgeDoc,
   deleteKnowledgeDoc,
   getAgent,
-  getAgentKnowledgeText,
   listKnowledgeDocs,
   type KnowledgeDoc,
 } from "../lib/db";
 
 const router: IRouter = Router();
-const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 2 * 1024 * 1024 } });
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 5 * 1024 * 1024 },
+});
 
+// ── SSRF guard ─────────────────────────────────────────────────────────────
+// Resolve the host and reject any private/loopback/link-local address so a
+// user cannot use the scrape endpoint to reach internal services.
+async function assertNotPrivateHost(host: string): Promise<void> {
+  const check = async (family: 4 | 6): Promise<void> => {
+    let addr: string;
+    try {
+      const r = await dnsLookup(host, { family });
+      addr = r.address;
+    } catch {
+      return;
+    }
+    if (family === 6) {
+      if (addr === "::1") throw new Error("Private address blocked");
+      if (/^(fc|fd|fe80)/i.test(addr)) throw new Error("Private address blocked");
+      return;
+    }
+    const p = addr.split(".").map(Number);
+    const blocked =
+      p[0] === 127 ||                                       // loopback
+      p[0] === 10 ||                                        // RFC1918
+      (p[0] === 172 && p[1]! >= 16 && p[1]! <= 31) ||     // RFC1918
+      (p[0] === 192 && p[1] === 168) ||                    // RFC1918
+      (p[0] === 169 && p[1] === 254) ||                    // link-local
+      p[0] === 0;                                           // unspecified
+    if (blocked) throw new Error("Private address blocked");
+  };
+  // Try both IPv4 and IPv6; if *either* resolves to a blocked range, reject.
+  const results = await Promise.allSettled([check(4), check(6)]);
+  for (const r of results) {
+    if (r.status === "rejected") throw r.reason;
+  }
+}
+
+// ── HTML stripping ──────────────────────────────────────────────────────────
 function stripHtml(html: string): string {
   return html
     .replace(/<script[\s\S]*?<\/script>/gi, "")
@@ -26,110 +64,162 @@ function stripHtml(html: string): string {
     .trim();
 }
 
-async function scrapeUrl(url: string): Promise<{ title: string; content: string }> {
-  const r = await fetch(url, {
+// ── Text extraction helpers ─────────────────────────────────────────────────
+async function extractText(buffer: Buffer, ext: string): Promise<string> {
+  if (ext === "pdf") {
+    try {
+      // pdf-parse is a CJS module; import dynamically so esbuild can handle it.
+      const pdfParse = (await import("pdf-parse")).default;
+      const result = await pdfParse(buffer);
+      return (result.text ?? "").trim();
+    } catch (e: any) {
+      throw new Error(`PDF extraction failed: ${e?.message}`);
+    }
+  }
+  if (ext === "docx") {
+    try {
+      const mammoth = await import("mammoth");
+      const result = await mammoth.extractRawText({ buffer });
+      return (result.value ?? "").trim();
+    } catch (e: any) {
+      throw new Error(`DOCX extraction failed: ${e?.message}`);
+    }
+  }
+  // txt / md / csv — raw UTF-8
+  return buffer.toString("utf-8").trim();
+}
+
+async function scrapeUrl(rawUrl: string): Promise<{ title: string; content: string }> {
+  const parsed = new URL(rawUrl);
+  await assertNotPrivateHost(parsed.hostname);
+  const r = await fetch(rawUrl, {
     headers: { "User-Agent": "Mozilla/5.0 (compatible; RapidXBot/1.0)" },
     signal: AbortSignal.timeout(10_000),
+    redirect: "follow",
   });
   if (!r.ok) throw new Error(`HTTP ${r.status}`);
+  const contentType = r.headers.get("content-type") ?? "";
+  if (!contentType.includes("text/html") && !contentType.includes("text/plain")) {
+    throw new Error("URL did not return an HTML or text page");
+  }
   const html = await r.text();
   const titleMatch = html.match(/<title[^>]*>([^<]+)<\/title>/i);
-  const rawTitle = titleMatch ? titleMatch[1]!.trim() : new URL(url).hostname;
+  const rawTitle = titleMatch ? titleMatch[1]!.trim() : parsed.hostname;
   const content = stripHtml(html).slice(0, 8000);
   return { title: rawTitle.slice(0, 120), content };
 }
 
+// ── Route handlers ──────────────────────────────────────────────────────────
 const listDocs: RequestHandler = async (req, res) => {
   const agentId = String(req.params["id"]);
-  const agent = await getAgent(agentId);
-  if (!agent) { res.status(404).json({ error: "Agent not found" }); return; }
-  const docs = await listKnowledgeDocs(agentId);
-  res.json({ docs });
+  if (!await getAgent(agentId)) { res.status(404).json({ error: "Agent not found" }); return; }
+  res.json({ docs: await listKnowledgeDocs(agentId) });
 };
 
-const addText: RequestHandler = async (req, res) => {
+// Unified upload/add endpoint: dispatches by `source` field or file upload.
+const addDoc: RequestHandler = async (req, res) => {
   const agentId = String(req.params["id"]);
-  const agent = await getAgent(agentId);
-  if (!agent) { res.status(404).json({ error: "Agent not found" }); return; }
-  const { title, content } = (req.body ?? {}) as { title?: string; content?: string };
-  if (!title || !String(title).trim()) { res.status(400).json({ error: "title required" }); return; }
-  if (!content || !String(content).trim()) { res.status(400).json({ error: "content required" }); return; }
+  if (!await getAgent(agentId)) { res.status(404).json({ error: "Agent not found" }); return; }
+
+  const file = (req as any).file as Express.Multer.File | undefined;
+
+  // ── File upload path ────────────────────────────────────────────────────
+  if (file) {
+    const name = file.originalname ?? "upload";
+    const ext = name.split(".").pop()?.toLowerCase() ?? "";
+    const allowed = ["txt", "md", "csv", "pdf", "docx"];
+    if (!allowed.includes(ext)) {
+      res.status(415).json({ error: `Supported formats: ${allowed.join(", ")}` });
+      return;
+    }
+    try {
+      const content = (await extractText(file.buffer, ext)).slice(0, 16000);
+      const title = name.replace(/\.[^.]+$/, "").slice(0, 120) || "Uploaded file";
+      const doc = await createKnowledgeDoc({
+        agent_id: agentId,
+        title,
+        content,
+        size: file.size,
+        source_type: "file",
+      });
+      res.status(201).json({ doc });
+    } catch (e: any) {
+      res.status(422).json({ error: e?.message || "Extraction failed" });
+    }
+    return;
+  }
+
+  // ── URL scrape path ─────────────────────────────────────────────────────
+  const { source, url, title: bodyTitle, content: bodyContent } = (req.body ?? {}) as {
+    source?: string; url?: string; title?: string; content?: string;
+  };
+
+  if (source === "url" || (url && !bodyContent)) {
+    const rawUrl = String(url ?? "").trim();
+    if (!rawUrl) { res.status(400).json({ error: "url required" }); return; }
+    let parsedUrl: URL;
+    try { parsedUrl = new URL(rawUrl); } catch { res.status(400).json({ error: "Invalid URL" }); return; }
+    if (!["http:", "https:"].includes(parsedUrl.protocol)) {
+      res.status(400).json({ error: "Only http/https URLs allowed" });
+      return;
+    }
+    try {
+      const { title, content } = await scrapeUrl(parsedUrl.href);
+      const doc = await createKnowledgeDoc({
+        agent_id: agentId,
+        title,
+        content,
+        size: Buffer.byteLength(content, "utf-8"),
+        source_type: "url",
+        source_url: parsedUrl.href,
+      });
+      res.status(201).json({ doc });
+    } catch (e: any) {
+      res.status(502).json({ error: `Could not fetch URL: ${e?.message || e}` });
+    }
+    return;
+  }
+
+  // ── Text snippet path ───────────────────────────────────────────────────
+  if (!bodyTitle || !String(bodyTitle).trim()) { res.status(400).json({ error: "title required" }); return; }
+  if (!bodyContent || !String(bodyContent).trim()) { res.status(400).json({ error: "content required" }); return; }
+  const content = String(bodyContent).trim().slice(0, 16000);
   const doc = await createKnowledgeDoc({
     agent_id: agentId,
-    title: String(title).trim().slice(0, 120),
-    content: String(content).trim().slice(0, 8000),
+    title: String(bodyTitle).trim().slice(0, 120),
+    content,
+    size: Buffer.byteLength(content, "utf-8"),
     source_type: "text",
   });
   res.status(201).json({ doc });
 };
 
-const addUrl: RequestHandler = async (req, res) => {
-  const agentId = String(req.params["id"]);
-  const agent = await getAgent(agentId);
-  if (!agent) { res.status(404).json({ error: "Agent not found" }); return; }
-  const { url } = (req.body ?? {}) as { url?: string };
-  if (!url || !String(url).trim()) { res.status(400).json({ error: "url required" }); return; }
-  let parsedUrl: URL;
-  try { parsedUrl = new URL(String(url).trim()); } catch { res.status(400).json({ error: "Invalid URL" }); return; }
-  if (!["http:", "https:"].includes(parsedUrl.protocol)) { res.status(400).json({ error: "Only http/https URLs allowed" }); return; }
-  try {
-    const { title, content } = await scrapeUrl(parsedUrl.href);
-    const doc = await createKnowledgeDoc({
-      agent_id: agentId,
-      title,
-      content,
-      source_type: "url",
-      source_url: parsedUrl.href,
-    });
-    res.status(201).json({ doc });
-  } catch (e: any) {
-    res.status(502).json({ error: `Could not fetch URL: ${e?.message || e}` });
-  }
+// Keep legacy sub-path routes as aliases for backwards compat.
+const addTextAlias: RequestHandler = async (req, res) => {
+  (req.body as any).source = "text";
+  return addDoc(req, res);
 };
-
-const addFile: RequestHandler = async (req, res) => {
-  const agentId = String(req.params["id"]);
-  const agent = await getAgent(agentId);
-  if (!agent) { res.status(404).json({ error: "Agent not found" }); return; }
-  const file = (req as any).file as Express.Multer.File | undefined;
-  if (!file) { res.status(400).json({ error: "No file uploaded" }); return; }
-  const name = file.originalname ?? "upload";
-  const ext = name.split(".").pop()?.toLowerCase() ?? "";
-  if (!["txt", "md", "csv"].includes(ext)) {
-    res.status(415).json({ error: "Supported formats: .txt, .md, .csv" });
-    return;
-  }
-  const content = file.buffer.toString("utf-8").slice(0, 8000);
-  const title = name.replace(/\.[^.]+$/, "").slice(0, 120) || "Uploaded file";
-  const doc = await createKnowledgeDoc({
-    agent_id: agentId,
-    title,
-    content,
-    source_type: "file",
-  });
-  res.status(201).json({ doc });
+const addUrlAlias: RequestHandler = async (req, res) => {
+  (req.body as any).source = "url";
+  return addDoc(req, res);
 };
 
 const removeDoc: RequestHandler = async (req, res) => {
-  const agentId = String(req.params["id"]);
-  const docId = String(req.params["docId"]);
-  const ok = await deleteKnowledgeDoc(docId, agentId);
+  const ok = await deleteKnowledgeDoc(String(req.params["docId"]), String(req.params["id"]));
   if (!ok) { res.status(404).json({ error: "Document not found" }); return; }
   res.json({ success: true });
 };
 
 router.get("/agents/:id/documents", listDocs);
-router.post("/agents/:id/documents/text", addText);
-router.post("/agents/:id/documents/url", addUrl);
-router.post("/agents/:id/documents/file", upload.single("file"), addFile);
+router.post("/agents/:id/documents", upload.single("file"), addDoc);
+router.post("/agents/:id/documents/text", addTextAlias);
+router.post("/agents/:id/documents/url", addUrlAlias);
+router.post("/agents/:id/documents/file", upload.single("file"), addDoc);
 router.delete("/agents/:id/documents/:docId", removeDoc);
 
-// Internal endpoint — worker fetches this at call start to inject knowledge into the prompt.
-// Same loopback+token guard as /api/internal/agents/:id/keys.
-import { writeFileSync, mkdirSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-
+// ── Internal knowledge endpoint ─────────────────────────────────────────────
+// Returns all docs as structured JSON for per-turn relevance scoring in the worker.
+// Same loopback + shared-secret guard as /api/internal/agents/:id/keys.
 const INTERNAL_TOKEN = process.env["INTERNAL_API_TOKEN"] ?? "";
 
 const internalKnowledge: RequestHandler = async (req, res) => {
@@ -141,8 +231,10 @@ const internalKnowledge: RequestHandler = async (req, res) => {
     return;
   }
   const agentId = String(req.params["id"]);
-  const text = await getAgentKnowledgeText(agentId);
-  res.json({ knowledge_text: text });
+  const docs = await listKnowledgeDocs(agentId);
+  res.json({
+    docs: docs.map((d) => ({ id: d.id, title: d.title, content: d.content })),
+  });
 };
 router.get("/internal/agents/:id/knowledge", internalKnowledge);
 

@@ -296,9 +296,78 @@ async def _publish_latency(room: rtc.Room, payload: dict) -> None:
         logger.debug(f"publish_data failed: {e}")
 
 
+import re as _re
+
+
+def _rank_kb_docs(docs: list[dict], query: str, top_k: int = 3, max_chars: int = 4000) -> list[dict]:
+    """Simple TF keyword scoring — fast enough for real-time voice turns.
+
+    Returns up to `top_k` docs whose combined content fits within `max_chars`,
+    ranked by how many query words appear in each doc."""
+    STOP = {"a", "an", "the", "is", "it", "to", "i", "and", "or", "of", "do", "you", "what"}
+    words = set(_re.findall(r'\w+', query.lower())) - STOP
+    if not words:
+        # No discriminating words — return all docs within budget
+        return _kb_budget(docs, max_chars)
+    scored: list[tuple[int, dict]] = []
+    for doc in docs:
+        text = f"{doc.get('title', '')} {doc.get('content', '')}".lower()
+        freq: dict[str, int] = {}
+        for w in _re.findall(r'\w+', text):
+            freq[w] = freq.get(w, 0) + 1
+        score = sum(min(freq.get(w, 0), 3) for w in words)
+        scored.append((score, doc))
+    scored.sort(key=lambda x: x[0], reverse=True)
+    relevant = [d for s, d in scored if s > 0]
+    fallback = [d for _, d in scored]  # all docs if nothing scored
+    return _kb_budget(relevant or fallback, max_chars)[:top_k]
+
+
+def _kb_budget(docs: list[dict], max_chars: int) -> list[dict]:
+    result: list[dict] = []
+    total = 0
+    for doc in docs:
+        c = len(doc.get("content", ""))
+        if total + c > max_chars and result:
+            break
+        result.append(doc)
+        total += c
+    return result
+
+
 class OutboundAssistant(Agent):
-    def __init__(self, instructions: str) -> None:
-        super().__init__(instructions=instructions)
+    def __init__(self, base_instructions: str, kb_docs: list[dict]) -> None:
+        super().__init__(instructions=base_instructions)
+        self._base_instructions = base_instructions
+        self._kb_docs = kb_docs
+
+    def refresh_knowledge(self, query: str) -> None:
+        """Score knowledge docs against the caller's utterance and inject the
+        top relevant docs into the active instructions for the next LLM turn."""
+        if not self._kb_docs:
+            return
+        relevant = _rank_kb_docs(self._kb_docs, query, top_k=3, max_chars=4000)
+        if not relevant:
+            return
+        kb_text = "\n\n---\n\n".join(
+            f"### {d.get('title', 'Note')}\n{d.get('content', '')[:2000]}"
+            for d in relevant
+        )
+        kb_section = (
+            "\n\n# Knowledge base\n"
+            "Use the facts below to answer the caller's question accurately. "
+            "Only cite what is directly relevant. If the answer is not here, "
+            "say you will find out and follow up.\n\n" + kb_text
+        )
+        new_instructions = self._base_instructions + kb_section
+        # LiveKit Agents ≥ 1.0: instructions is a mutable property on Agent.
+        try:
+            self.instructions = new_instructions  # type: ignore[misc]
+        except AttributeError:
+            try:
+                object.__setattr__(self, "instructions", new_instructions)
+            except Exception:
+                pass
 
 
 async def entrypoint(ctx: agents.JobContext):
@@ -375,9 +444,10 @@ async def entrypoint(ctx: agents.JobContext):
     wait_for_user_first = bool(cfg.get("wait_for_user_first"))
     mode = (cfg.get("mode") or "").strip()
 
-    # Fetch agent knowledge base documents from the api-server and inject them
-    # into the system prompt so the LLM can answer caller questions from them.
-    knowledge_text = ""
+    # Fetch agent knowledge base documents from the api-server.
+    # Stored as a list so we can do per-turn relevance selection (keyword scoring)
+    # rather than injecting everything at call start.
+    kb_docs: list[dict] = []
     if agent_id:
         try:
             internal_token_for_kb = os.getenv("INTERNAL_API_TOKEN", "")
@@ -394,13 +464,14 @@ async def entrypoint(ctx: agents.JobContext):
                 kb_url, headers={"x-internal-token": internal_token_for_kb}
             )
             with urllib.request.urlopen(kb_req, timeout=3) as _r:
-                knowledge_text = (json.loads(_r.read()).get("knowledge_text") or "").strip()
-            if knowledge_text:
-                logger.info(f"Loaded knowledge base: {len(knowledge_text)} chars")
+                kb_docs = json.loads(_r.read()).get("docs") or []
+            if kb_docs:
+                logger.info(f"Loaded {len(kb_docs)} knowledge doc(s) for per-turn retrieval")
         except Exception as _e:
             logger.debug(f"Knowledge base fetch skipped: {_e}")
 
-    instructions = _build_persona(user_prompt, language, speaking_speed, auto_detect, knowledge_text)
+    # Base instructions — no knowledge injected yet (done per-turn below).
+    instructions = _build_persona(user_prompt, language, speaking_speed, auto_detect)
     endpointing = ENDPOINTING_MS.get(sensitivity, ENDPOINTING_MS["medium"])
 
     logger.info(
@@ -609,9 +680,28 @@ async def entrypoint(ctx: agents.JobContext):
         except Exception as e:
             logger.debug(f"metrics hook failed: {e}")
 
+    assistant = OutboundAssistant(instructions, kb_docs)
+
+    # Per-turn relevance: when the caller finishes speaking, score all knowledge
+    # docs against their utterance and update the agent's instructions before the
+    # LLM generates its next reply. This fires *after* filler scheduling so the
+    # knowledge refresh never delays audio playback.
+    if kb_docs:
+        @session.on("user_input_transcribed")
+        def _on_user_kb(ev) -> None:
+            try:
+                if not getattr(ev, "is_final", False):
+                    return
+                query = (getattr(ev, "transcript", "") or "").strip()
+                if len(query) < 3:
+                    return
+                assistant.refresh_knowledge(query)
+            except Exception as _e:
+                logger.debug(f"kb refresh failed: {_e}")
+
     await session.start(
         room=ctx.room,
-        agent=OutboundAssistant(instructions),
+        agent=assistant,
         room_input_options=RoomInputOptions(
             noise_cancellation=noise_cancellation.BVCTelephony(),
             close_on_disconnect=True,

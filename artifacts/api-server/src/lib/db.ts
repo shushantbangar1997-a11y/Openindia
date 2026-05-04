@@ -62,6 +62,7 @@ export type KnowledgeDoc = {
   agent_id: string;
   title: string;
   content: string;
+  size: number;
   source_type: "text" | "url" | "file";
   source_url?: string;
   created_at: string;
@@ -389,7 +390,7 @@ export async function listKnowledgeDocs(agentId: string): Promise<KnowledgeDoc[]
 }
 
 export async function createKnowledgeDoc(
-  input: Omit<KnowledgeDoc, "id" | "created_at">,
+  input: Omit<KnowledgeDoc, "id" | "created_at"> & { size?: number },
 ): Promise<KnowledgeDoc> {
   const s = await load();
   const doc: KnowledgeDoc = {
