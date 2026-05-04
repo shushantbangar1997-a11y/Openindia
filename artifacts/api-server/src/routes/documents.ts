@@ -68,8 +68,9 @@ function stripHtml(html: string): string {
 async function extractText(buffer: Buffer, ext: string): Promise<string> {
   if (ext === "pdf") {
     try {
-      // pdf-parse is a CJS module; import dynamically so esbuild can handle it.
-      const pdfParse = (await import("pdf-parse")).default;
+      // Import directly from the internal lib path to avoid pdf-parse@1.x's
+      // buggy "module.parent" check that runs its own test suite on import.
+      const pdfParse = require("pdf-parse/lib/pdf-parse.js") as (buf: Buffer) => Promise<{ text: string }>;
       const result = await pdfParse(buffer);
       return (result.text ?? "").trim();
     } catch (e: any) {
