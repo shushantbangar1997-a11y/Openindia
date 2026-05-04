@@ -80,10 +80,10 @@ const events: RequestHandler = async (req, res) => {
     }
     res.json({ call: c });
 
-    // Fire-and-forget AI summary for all ended calls (summariseCall handles
-    // empty transcripts with a no-answer fallback, so no transcript gate here).
+    // Fire-and-forget AI summary for ended AND failed terminal calls.
+    // summariseCall handles empty transcripts with a no-answer fallback.
     // _summarising guards against duplicate LLM calls from repeated webhooks.
-    if (type === "ended" && !c.summary && !_summarising.has(room)) {
+    if ((type === "ended" || type === "failed") && !c.summary && !_summarising.has(room)) {
       _summarising.add(room);
       setImmediate(async () => {
         try {

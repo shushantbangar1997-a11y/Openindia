@@ -64,9 +64,11 @@ export default function CallsPage() {
                 <span className="truncate">{c.agent_name ?? "—"}</span>
                 <span className="shrink-0 ml-2">{formatRelative(c.started_at)}</span>
               </div>
-              {c.summary && (
-                <p className="text-[11px] text-gray-500 leading-relaxed line-clamp-1 mt-0.5">
-                  {c.summary}
+              {(c.status === "ended" || c.status === "failed") && (
+                <p className={`text-[11px] leading-relaxed line-clamp-1 mt-0.5 ${
+                  c.summary ? "text-gray-500" : "text-gray-300 italic"
+                }`}>
+                  {c.summary ?? "Generating summary…"}
                 </p>
               )}
             </button>
