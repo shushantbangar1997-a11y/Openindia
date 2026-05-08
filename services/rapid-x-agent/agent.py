@@ -797,6 +797,8 @@ async def entrypoint(ctx: agents.JobContext):
     call_state["session"] = session  # call_state already exists from above
 
     # Stream conversation turns back to the api-server for the transcript view.
+    # Captures user/assistant speech turns AND tool call/result items so the
+    # Call History screen shows what actions the agent triggered mid-call.
     @session.on("conversation_item_added")
     def _on_item(ev) -> None:
         try:
@@ -805,6 +807,7 @@ async def entrypoint(ctx: agents.JobContext):
                 return
             role = getattr(item, "role", None)
             text = getattr(item, "text_content", None) or ""
+            # Standard speech turns
             if role in ("user", "assistant") and text.strip():
                 asyncio.create_task(
                     _post_back_async(
@@ -812,6 +815,33 @@ async def entrypoint(ctx: agents.JobContext):
                         {"role": role, "text": text},
                     )
                 )
+                return
+            # Tool invocation / result items — different item types depending on
+            # livekit-agents version; we detect by item type string.
+            item_type = str(getattr(item, "type", "") or "")
+            if "function_call" in item_type:
+                fn_name = (getattr(item, "name", None) or getattr(item, "function_name", None) or "").strip()
+                if "output" in item_type:
+                    # Tool result
+                    output = str(getattr(item, "output", "") or "").strip()
+                    if fn_name and output:
+                        label = f"[Tool result: {fn_name}] {output[:300]}"
+                        asyncio.create_task(
+                            _post_back_async(
+                                f"/api/calls/by-room/{ctx.room.name}/transcript",
+                                {"role": "assistant", "text": label},
+                            )
+                        )
+                elif fn_name:
+                    # Tool invocation
+                    args = str(getattr(item, "arguments", "") or "").strip()
+                    label = f"[Tool call: {fn_name}]{(' ' + args) if args else ''}"
+                    asyncio.create_task(
+                        _post_back_async(
+                            f"/api/calls/by-room/{ctx.room.name}/transcript",
+                            {"role": "assistant", "text": label[:300]},
+                        )
+                    )
         except Exception as e:
             logger.debug(f"transcript hook failed: {e}")
 

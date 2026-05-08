@@ -342,8 +342,8 @@ export default function AgentsPage() {
                 <SfTab active={tab === "persona"} onClick={() => setTab("persona")} icon={<Brain className="w-3.5 h-3.5" />} label="AI Model" />
                 <SfTab active={tab === "voice"} onClick={() => setTab("voice")} icon={<Volume2 className="w-3.5 h-3.5" />} label="Voice" />
                 <SfTab active={tab === "behavior"} onClick={() => setTab("behavior")} icon={<Sliders className="w-3.5 h-3.5" />} label="Call behavior" />
-                <SfTab active={tab === "knowledge"} onClick={() => setTab("knowledge")} icon={<BookOpen className="w-3.5 h-3.5" />} label="Knowledge" />
                 <SfTab active={tab === "actions"} onClick={() => setTab("actions")} icon={<Zap className="w-3.5 h-3.5" />} label="Actions" />
+                <SfTab active={tab === "knowledge"} onClick={() => setTab("knowledge")} icon={<BookOpen className="w-3.5 h-3.5" />} label="Knowledge" />
               </div>
             </div>
 
@@ -449,6 +449,19 @@ export default function AgentsPage() {
                                 [arr[idx], arr[idx + 1]] = [arr[idx + 1]!, arr[idx]!];
                                 return { ...d, conversation_stages: arr };
                               })}
+                              onDragStart={(e) => e.dataTransfer.setData("stageIdx", String(idx))}
+                              onDragOver={(e) => e.preventDefault()}
+                              onDrop={(e) => {
+                                e.preventDefault();
+                                const from = Number(e.dataTransfer.getData("stageIdx"));
+                                if (!Number.isFinite(from) || from === idx) return;
+                                setDraft((d) => {
+                                  const arr = [...(d.conversation_stages ?? [])];
+                                  const [item] = arr.splice(from, 1);
+                                  arr.splice(idx, 0, item!);
+                                  return { ...d, conversation_stages: arr };
+                                });
+                              }}
                             />
                           ))}
                           {(draft.conversation_stages ?? []).length < 20 && (
@@ -809,7 +822,7 @@ export default function AgentsPage() {
   );
 }
 
-function StageCard({ index, total, stage, onUpdate, onDelete, onMoveUp, onMoveDown }: {
+function StageCard({ index, total, stage, onUpdate, onDelete, onMoveUp, onMoveDown, onDragStart, onDragOver, onDrop }: {
   index: number;
   total: number;
   stage: ConversationStage;
@@ -817,9 +830,18 @@ function StageCard({ index, total, stage, onUpdate, onDelete, onMoveUp, onMoveDo
   onDelete: () => void;
   onMoveUp?: () => void;
   onMoveDown?: () => void;
+  onDragStart?: (e: React.DragEvent) => void;
+  onDragOver?: (e: React.DragEvent) => void;
+  onDrop?: (e: React.DragEvent) => void;
 }) {
   return (
-    <div className="bg-gray-50 border border-gray-200 rounded-xl p-4 space-y-3">
+    <div
+      draggable
+      onDragStart={onDragStart}
+      onDragOver={onDragOver}
+      onDrop={onDrop}
+      className="bg-gray-50 border border-gray-200 rounded-xl p-4 space-y-3 cursor-grab active:cursor-grabbing active:opacity-60 active:border-violet-300"
+    >
       <div className="flex items-center gap-2">
         <span className="shrink-0 w-5 h-5 rounded-full bg-violet-100 text-violet-700 text-[10px] font-bold flex items-center justify-center">
           {index + 1}
@@ -882,7 +904,7 @@ function ActionsTab({ draft, setDraft }: { draft: Pick<Draft, "tools">; setDraft
   const [newTool, setNewTool] = useState<Omit<AgentTool, "id">>({
     name: "", description: "", webhook_url: "", parameters_schema: [],
   });
-  const [paramDraft, setParamDraft] = useState({ name: "", type: "string" as const, description: "", required: false });
+  const [paramDraft, setParamDraft] = useState<{ name: string; type: "string" | "number" | "boolean"; description: string; required: boolean }>({ name: "", type: "string", description: "", required: false });
 
   const hasSaveLead = (draft.tools ?? []).some((t) => t.builtin === "save_lead");
   const hasEndCall = (draft.tools ?? []).some((t) => t.builtin === "end_call");
@@ -1031,33 +1053,54 @@ function ActionsTab({ draft, setDraft }: { draft: Pick<Draft, "tools">; setDraft
                 </div>
               )}
               {newTool.parameters_schema.length < 10 && (
-                <div className="flex gap-2 items-end">
+                <div className="space-y-1.5 p-3 rounded-lg border border-violet-100 bg-white">
+                  <div className="text-[10px] font-semibold text-violet-600 uppercase tracking-wide mb-2">Add parameter</div>
+                  <div className="flex gap-2">
+                    <input
+                      value={paramDraft.name}
+                      onChange={(e) => setParamDraft((p) => ({ ...p, name: e.target.value }))}
+                      placeholder="param_name"
+                      className="flex-1 px-2.5 py-1.5 bg-gray-50 border border-violet-200 rounded-lg text-xs font-mono placeholder:text-gray-300 focus:outline-none focus:ring-1 focus:ring-violet-400"
+                    />
+                    <select
+                      value={paramDraft.type}
+                      onChange={(e) => setParamDraft((p) => ({ ...p, type: e.target.value as "string" | "number" | "boolean" }))}
+                      className="px-2 py-1.5 bg-gray-50 border border-violet-200 rounded-lg text-xs focus:outline-none"
+                    >
+                      <option value="string">string</option>
+                      <option value="number">number</option>
+                      <option value="boolean">boolean</option>
+                    </select>
+                  </div>
                   <input
-                    value={paramDraft.name}
-                    onChange={(e) => setParamDraft((p) => ({ ...p, name: e.target.value }))}
-                    placeholder="param_name"
-                    className="flex-1 px-2.5 py-1.5 bg-white border border-violet-200 rounded-lg text-xs font-mono placeholder:text-gray-300 focus:outline-none focus:ring-1 focus:ring-violet-400"
+                    value={paramDraft.description ?? ""}
+                    onChange={(e) => setParamDraft((p) => ({ ...p, description: e.target.value }))}
+                    placeholder="Description (what this parameter is for)"
+                    className="w-full px-2.5 py-1.5 bg-gray-50 border border-violet-200 rounded-lg text-xs placeholder:text-gray-300 focus:outline-none focus:ring-1 focus:ring-violet-400"
                   />
-                  <select
-                    value={paramDraft.type}
-                    onChange={(e) => setParamDraft((p) => ({ ...p, type: e.target.value as any }))}
-                    className="px-2 py-1.5 bg-white border border-violet-200 rounded-lg text-xs focus:outline-none"
-                  >
-                    <option value="string">string</option>
-                    <option value="number">number</option>
-                    <option value="boolean">boolean</option>
-                  </select>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      if (!paramDraft.name.trim()) return;
-                      setNewTool((t) => ({ ...t, parameters_schema: [...t.parameters_schema, { ...paramDraft, name: paramDraft.name.trim() }] }));
-                      setParamDraft({ name: "", type: "string", description: "", required: false });
-                    }}
-                    className="px-2.5 py-1.5 bg-violet-600 text-white rounded-lg text-xs font-semibold hover:bg-violet-700"
-                  >
-                    + Param
-                  </button>
+                  <div className="flex items-center justify-between">
+                    <label className="flex items-center gap-2 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={paramDraft.required ?? false}
+                        onChange={(e) => setParamDraft((p) => ({ ...p, required: e.target.checked }))}
+                        className="w-3.5 h-3.5 rounded text-violet-600"
+                      />
+                      <span className="text-xs text-gray-600">Required</span>
+                    </label>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (!paramDraft.name.trim()) return;
+                        setNewTool((t) => ({ ...t, parameters_schema: [...t.parameters_schema, { ...paramDraft, name: paramDraft.name.trim() }] }));
+                        setParamDraft({ name: "", type: "string", description: "", required: false });
+                      }}
+                      disabled={!paramDraft.name.trim()}
+                      className="px-2.5 py-1.5 bg-violet-600 text-white rounded-lg text-xs font-semibold hover:bg-violet-700 disabled:opacity-40"
+                    >
+                      + Add param
+                    </button>
+                  </div>
                 </div>
               )}
               <div className="flex gap-2 pt-1">
