@@ -10,6 +10,37 @@ import {
 
 export type InterruptionSensitivity = "low" | "medium" | "high";
 
+export type ConversationStage = {
+  id: string;
+  name: string;
+  goal: string;
+  instructions: string;
+};
+
+export type ToolParameter = {
+  name: string;
+  type: "string" | "number" | "boolean";
+  description: string;
+  required: boolean;
+};
+
+export type AgentTool = {
+  id: string;
+  name: string;
+  description: string;
+  webhook_url: string;
+  parameters_schema: ToolParameter[];
+  builtin?: "save_lead" | "end_call";
+};
+
+export type LeadData = {
+  name?: string;
+  email?: string;
+  phone?: string;
+  company?: string;
+  notes?: string;
+};
+
 export type Agent = {
   id: string;
   name: string;
@@ -28,10 +59,12 @@ export type Agent = {
   interruption_sensitivity: InterruptionSensitivity;
   wait_for_user_first: boolean;
   inbound_enabled: boolean;
-  // When inbound_enabled is on, controls whether the agent speaks first (auto-greet)
-  // or waits for the caller to speak first. Defaults to false = wait for caller.
   inbound_auto_greet: boolean;
   template_id: string | null;
+  // Script flow: ordered conversation stages that guide the agent
+  conversation_stages: ConversationStage[];
+  // Live actions the agent can invoke during calls
+  tools: AgentTool[];
   created_at: string;
   updated_at: string;
 };
@@ -58,6 +91,8 @@ export type CallRecord = {
   ended_at: string | null;
   end_reason: string | null;
   transcript: TranscriptTurn[];
+  // Collected during call via save_lead tool
+  lead_data?: LeadData;
   // AI-generated after call ends
   summary?: string;
   outcome?: CallOutcome;
@@ -91,13 +126,8 @@ type Store = {
 };
 
 const DATA_DIR = path.resolve(process.cwd(), "data");
-// Runtime store contains user-pasted provider API keys, so the path is
-// gitignored. The committed `store.seed.json` is an empty seed used only
-// to bootstrap a fresh checkout.
 const STORE_PATH = path.join(DATA_DIR, "store.runtime.json");
 const SEED_PATH = path.join(DATA_DIR, "store.seed.json");
-// Per-agent document content lives in individual files so the flat-JSON
-// store stays small even with large uploaded PDFs/DOCXs.
 const DOCS_DIR = path.join(DATA_DIR, "docs");
 
 function docContentPath(agentId: string, docId: string): string {
@@ -158,6 +188,8 @@ function withDefaults(input: Partial<Agent> & { name: string }): Omit<Agent, "id
     inbound_enabled: Boolean(input.inbound_enabled),
     inbound_auto_greet: Boolean(input.inbound_auto_greet),
     template_id: input.template_id ?? null,
+    conversation_stages: Array.isArray(input.conversation_stages) ? input.conversation_stages : [],
+    tools: Array.isArray(input.tools) ? input.tools : [],
   };
 }
 
@@ -182,6 +214,7 @@ function migrateCall(c: any): CallRecord {
   return {
     ...c,
     direction: (c.direction === "inbound" || c.direction === "outbound") ? c.direction : "outbound",
+    lead_data: c.lead_data ?? undefined,
     summary: c.summary,
     outcome: c.outcome,
     sentiment: c.sentiment,
@@ -211,6 +244,8 @@ function migrateAgent(a: any): Agent {
     inbound_enabled: Boolean(a.inbound_enabled),
     inbound_auto_greet: Boolean(a.inbound_auto_greet),
     template_id: a.template_id ?? null,
+    conversation_stages: Array.isArray(a.conversation_stages) ? a.conversation_stages : [],
+    tools: Array.isArray(a.tools) ? a.tools : [],
     created_at: a.created_at ?? nowIso(),
     updated_at: a.updated_at ?? nowIso(),
   };
@@ -218,9 +253,6 @@ function migrateAgent(a: any): Agent {
 
 async function load(): Promise<Store> {
   if (cache) return cache;
-  // Prefer the runtime (gitignored) store; fall back to the committed seed
-  // on first boot. This keeps user-pasted provider keys out of git forever
-  // even though the seed file remains tracked.
   let raw: string | null = null;
   for (const p of [STORE_PATH, SEED_PATH]) {
     try {
@@ -249,7 +281,6 @@ async function load(): Promise<Store> {
     cache.agents.push(defaultAgent());
     await persist();
   } else {
-    // Persist any migrations.
     await persist();
   }
   return cache;
@@ -388,6 +419,19 @@ export async function updateCallByRoom(
   return s.calls[idx]!;
 }
 
+export async function updateCallLeadData(
+  roomName: string,
+  lead: LeadData,
+): Promise<CallRecord | null> {
+  const s = await load();
+  const idx = s.calls.findIndex((c) => c.room_name === roomName);
+  if (idx === -1) return null;
+  // Merge incoming lead fields with any existing lead_data
+  s.calls[idx]!.lead_data = { ...(s.calls[idx]!.lead_data ?? {}), ...lead };
+  await persist();
+  return s.calls[idx]!;
+}
+
 export async function appendTranscript(
   roomName: string,
   turn: TranscriptTurn,
@@ -409,12 +453,7 @@ export function buildAgentMetadata(
   const combinedPrompt = [agent.system_prompt, extra.per_call_prompt]
     .filter((p) => p && String(p).trim())
     .join("\n\n## Per-call context\n");
-  // Resolve catalog-driven STT model/language so the worker doesn't have to
-  // re-derive them — single source of truth lives in voices.ts.
-  // When auto_detect is on, force Deepgram's multi-language detection mode.
   const lang = getLanguage(agent.language);
-  // Auto-detect uses Deepgram nova-3's multilingual mode for higher accuracy
-  // on code-switching calls; falls back to nova-2 when single-language.
   const stt_model = agent.auto_detect_language ? "nova-3" : (lang?.stt_model ?? "nova-3");
   const stt_language = agent.auto_detect_language
     ? "multi"
@@ -435,19 +474,16 @@ export function buildAgentMetadata(
     speaking_speed: agent.speaking_speed,
     fillers_enabled: agent.fillers_enabled,
     custom_fillers: agent.custom_fillers,
-    // We intentionally do NOT put provider API keys into room metadata
-    // (which is readable by every participant). The worker fetches them
-    // server-to-server from /api/internal/agents/:id/keys at job start.
     interruption_sensitivity: agent.interruption_sensitivity,
     wait_for_user_first: agent.wait_for_user_first,
     inbound_auto_greet: agent.inbound_auto_greet,
+    // Script and tools are passed so the worker can inject them
+    conversation_stages: agent.conversation_stages,
+    tools: agent.tools,
   });
 }
 
 // ── Knowledge Docs ──────────────────────────────────────
-// Metadata is stored in the JSON flat-file; document content lives in
-// individual per-agent files under data/docs/{agent_id}/{doc_id}.txt
-// so the JSON store stays compact even for large PDF/DOCX uploads.
 export async function listKnowledgeDocs(agentId: string): Promise<KnowledgeDoc[]> {
   const s = await load();
   const metas = (s.knowledge_docs ?? [])

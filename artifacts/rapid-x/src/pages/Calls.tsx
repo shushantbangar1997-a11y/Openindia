@@ -13,8 +13,9 @@ import {
   TrendingUp,
   TrendingDown,
   Minus,
+  UserCheck,
 } from "lucide-react";
-import { useCall, useCalls, type CallRecord, type CallOutcome, type CallSentiment } from "@/lib/agents";
+import { useCall, useCalls, type CallRecord, type CallOutcome, type CallSentiment, type LeadData } from "@/lib/agents";
 
 export default function CallsPage() {
   const { data, isLoading } = useCalls(4000);
@@ -148,6 +149,11 @@ function CallDetail({ callId }: { callId: string }) {
         {/* AI Summary card — appears before transcript */}
         {showSummaryCard && <SummaryCard call={c} />}
 
+        {/* Lead data card — shown when the agent saved caller contact info */}
+        {c.lead_data && Object.values(c.lead_data).some(Boolean) && (
+          <LeadDataCard lead={c.lead_data} />
+        )}
+
         {/* Transcript */}
         <div>
           <h3 className="text-[11px] uppercase tracking-widest text-gray-400 font-semibold mb-4">
@@ -183,6 +189,37 @@ function CallDetail({ callId }: { callId: string }) {
             </div>
           )}
         </div>
+      </div>
+    </div>
+  );
+}
+
+function LeadDataCard({ lead }: { lead: LeadData }) {
+  const fields: { label: string; value?: string }[] = [
+    { label: "Name", value: lead.name },
+    { label: "Email", value: lead.email },
+    { label: "Phone", value: lead.phone },
+    { label: "Company", value: lead.company },
+    { label: "Notes", value: lead.notes },
+  ].filter((f) => Boolean(f.value));
+
+  return (
+    <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-5">
+      <div className="flex items-center gap-2 mb-3">
+        <div className="w-7 h-7 rounded-lg bg-emerald-50 flex items-center justify-center">
+          <UserCheck className="w-3.5 h-3.5 text-emerald-500" />
+        </div>
+        <span className="text-[11px] font-semibold uppercase tracking-widest text-gray-400">
+          Lead Captured
+        </span>
+      </div>
+      <div className="grid grid-cols-2 gap-3">
+        {fields.map((f) => (
+          <div key={f.label} className={f.label === "Notes" ? "col-span-2" : ""}>
+            <div className="text-[10px] font-semibold uppercase tracking-wide text-gray-400 mb-0.5">{f.label}</div>
+            <div className="text-sm text-gray-800 break-words">{f.value}</div>
+          </div>
+        ))}
       </div>
     </div>
   );

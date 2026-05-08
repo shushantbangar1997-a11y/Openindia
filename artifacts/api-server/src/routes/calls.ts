@@ -4,12 +4,12 @@ import {
   getCall,
   listCalls,
   updateCallByRoom,
+  updateCallLeadData,
+  type LeadData,
 } from "../lib/db";
 import { summariseCall } from "../lib/summarize";
 
 // Lightweight in-memory guard: tracks rooms whose summary job is in flight.
-// Prevents duplicate LLM calls when repeated "ended" webhooks arrive before
-// the async write completes (the persisted !c.summary check uses a stale snapshot).
 const _summarising = new Set<string>();
 
 const router: IRouter = Router();
@@ -80,15 +80,10 @@ const events: RequestHandler = async (req, res) => {
     }
     res.json({ call: c });
 
-    // Fire-and-forget AI summary for ended AND failed terminal calls.
-    // summariseCall handles empty transcripts with a no-answer fallback.
-    // _summarising guards against duplicate LLM calls from repeated webhooks.
     if ((type === "ended" || type === "failed") && !c.summary && !_summarising.has(room)) {
       _summarising.add(room);
       setImmediate(async () => {
         try {
-          // Re-fetch the call record so any transcript turns that arrived
-          // after the "ended" event are included in the summary.
           const callToSummarise = (await getCall(c.id)) ?? c;
           const result = await summariseCall(callToSummarise);
           if (result) {
@@ -98,8 +93,6 @@ const events: RequestHandler = async (req, res) => {
               sentiment: result.sentiment,
             });
           } else {
-            // Persist a terminal fallback so the UI never shows a perpetual
-            // "Generating…" spinner (e.g. Groq key missing or parse error).
             await updateCallByRoom(room, {
               summary: "Summary unavailable.",
               outcome: c.answered_at ? "completed" : "no-answer",
@@ -107,7 +100,6 @@ const events: RequestHandler = async (req, res) => {
             });
           }
         } catch {
-          // Last-resort: write fallback so UI doesn't spin forever.
           try {
             await updateCallByRoom(room, {
               summary: "Summary unavailable.",
@@ -147,11 +139,44 @@ const transcript: RequestHandler = async (req, res) => {
   res.json({ ok: true });
 };
 
-// Stats must be registered before the /:id wildcard to avoid being swallowed.
+// Internal callback from the agent worker: saves caller contact info.
+const lead: RequestHandler = async (req, res) => {
+  const room = String(req.params["room"]);
+  const body = (req.body ?? {}) as Record<string, unknown>;
+  const data: LeadData = {};
+  if (typeof body["name"] === "string" && body["name"].trim()) {
+    data.name = body["name"].trim().slice(0, 200);
+  }
+  if (typeof body["email"] === "string" && body["email"].trim()) {
+    data.email = body["email"].trim().slice(0, 200);
+  }
+  if (typeof body["phone"] === "string" && body["phone"].trim()) {
+    data.phone = body["phone"].trim().slice(0, 50);
+  }
+  if (typeof body["company"] === "string" && body["company"].trim()) {
+    data.company = body["company"].trim().slice(0, 200);
+  }
+  if (typeof body["notes"] === "string" && body["notes"].trim()) {
+    data.notes = body["notes"].trim().slice(0, 2000);
+  }
+  if (Object.keys(data).length === 0) {
+    res.status(400).json({ error: "No lead fields provided" });
+    return;
+  }
+  const c = await updateCallLeadData(room, data);
+  if (!c) {
+    res.status(404).json({ error: "Unknown room" });
+    return;
+  }
+  res.json({ ok: true, lead_data: c.lead_data });
+};
+
+// Stats must be registered before /:id wildcard.
 router.get("/calls", list);
 router.get("/calls/stats", stats);
 router.get("/calls/:id", getOne);
 router.post("/calls/by-room/:room/events", events);
 router.post("/calls/by-room/:room/transcript", transcript);
+router.post("/calls/by-room/:room/lead", lead);
 
 export default router;

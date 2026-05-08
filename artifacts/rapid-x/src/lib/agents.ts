@@ -2,6 +2,37 @@ import { useQuery } from "@tanstack/react-query";
 import { apiGet } from "./api";
 import type { Catalog, TtsProvider, Voice } from "./voices";
 
+export type ConversationStage = {
+  id: string;
+  name: string;
+  goal: string;
+  instructions: string;
+};
+
+export type ToolParameter = {
+  name: string;
+  type: "string" | "number" | "boolean";
+  description: string;
+  required: boolean;
+};
+
+export type AgentTool = {
+  id: string;
+  name: string;
+  description: string;
+  webhook_url: string;
+  parameters_schema: ToolParameter[];
+  builtin?: "save_lead" | "end_call";
+};
+
+export type LeadData = {
+  name?: string;
+  email?: string;
+  phone?: string;
+  company?: string;
+  notes?: string;
+};
+
 export type Agent = {
   id: string;
   name: string;
@@ -18,11 +49,11 @@ export type Agent = {
   interruption_sensitivity: "low" | "medium" | "high";
   wait_for_user_first: boolean;
   inbound_enabled: boolean;
-  // When inbound is enabled, controls whether the agent speaks first (true)
-  // or waits for the caller to speak first (false, the default).
   inbound_auto_greet: boolean;
   inbound_token?: string;
   template_id: string | null;
+  conversation_stages: ConversationStage[];
+  tools: AgentTool[];
   created_at: string;
   updated_at: string;
 };
@@ -43,6 +74,7 @@ export type CallRecord = {
   ended_at: string | null;
   end_reason: string | null;
   transcript: { role: "user" | "assistant"; text: string; ts: string }[];
+  lead_data?: LeadData;
   summary?: string;
   outcome?: CallOutcome;
   sentiment?: CallSentiment;

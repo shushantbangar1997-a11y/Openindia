@@ -24,6 +24,8 @@ import asyncio
 import json
 import logging
 import os
+import math
+import inspect
 import random
 import urllib.request
 from typing import Optional
@@ -245,6 +247,7 @@ async def _wait_for_callee(
 def _build_persona(
     user_prompt: str, language: str, speaking_speed: float, auto_detect: bool,
     knowledge_text: str = "",
+    conversation_stages: list = None,
 ) -> str:
     """Stitch a small, opinionated language/style header onto the user prompt
     so the LLM consistently sounds human and stays in the right language."""
@@ -285,7 +288,25 @@ def _build_persona(
             f"say you'll find out and follow up.\n\n"
             f"{knowledge_text}"
         )
-    return f"{header}\n# Your role\n{body}{kb_section}"
+    stage_section = ""
+    if conversation_stages:
+        parts = [
+            "# Conversation script\n"
+            "Follow these stages in order. Complete each stage's goal before moving to the next. "
+            "Transition naturally — do not announce stage names to the caller.\n"
+        ]
+        for i, stage in enumerate(conversation_stages, 1):
+            s_name = (stage.get("name") or f"Stage {i}").strip()
+            s_goal = (stage.get("goal") or "").strip()
+            s_inst = (stage.get("instructions") or "").strip()
+            entry = f"**Stage {i} — {s_name}**"
+            if s_goal:
+                entry += f"\nGoal: {s_goal}"
+            if s_inst:
+                entry += f"\nInstructions: {s_inst}"
+            parts.append(entry)
+        stage_section = "\n\n" + "\n\n".join(parts)
+    return f"{header}\n# Your role\n{body}{kb_section}{stage_section}"
 
 
 async def _publish_latency(room: rtc.Room, payload: dict) -> None:
@@ -300,26 +321,41 @@ import re as _re
 
 
 def _rank_kb_docs(docs: list[dict], query: str, top_k: int = 3, max_chars: int = 4000) -> list[dict]:
-    """Simple TF keyword scoring — fast enough for real-time voice turns.
+    """BM25 document ranking (k1=1.5, b=0.75) — better recall for short voice queries.
 
     Returns up to `top_k` docs whose combined content fits within `max_chars`,
-    ranked by how many query words appear in each doc."""
-    STOP = {"a", "an", "the", "is", "it", "to", "i", "and", "or", "of", "do", "you", "what"}
-    words = set(_re.findall(r'\w+', query.lower())) - STOP
-    if not words:
-        # No discriminating words — return all docs within budget
-        return _kb_budget(docs, max_chars)
-    scored: list[tuple[int, dict]] = []
-    for doc in docs:
-        text = f"{doc.get('title', '')} {doc.get('content', '')}".lower()
+    ranked by BM25 score."""
+    STOP = {"a", "an", "the", "is", "it", "to", "i", "and", "or", "of", "do", "you", "what", "in", "on", "at"}
+
+    def _tok(text: str) -> list[str]:
+        return [w for w in _re.findall(r'\w+', text.lower()) if w not in STOP and len(w) > 1]
+
+    query_tokens = set(_tok(query))
+    if not query_tokens:
+        return _kb_budget(docs, max_chars)[:top_k]
+
+    corpus = [_tok(f"{d.get('title', '')} {d.get('content', '')}") for d in docs]
+    N = len(corpus)
+    avg_len = sum(len(c) for c in corpus) / max(N, 1)
+    k1, b_val = 1.5, 0.75
+
+    scored: list[tuple[float, dict]] = []
+    for doc, tokens in zip(docs, corpus):
         freq: dict[str, int] = {}
-        for w in _re.findall(r'\w+', text):
-            freq[w] = freq.get(w, 0) + 1
-        score = sum(min(freq.get(w, 0), 3) for w in words)
+        for t in tokens:
+            freq[t] = freq.get(t, 0) + 1
+        dl = len(tokens)
+        score = 0.0
+        for token in query_tokens:
+            f = freq.get(token, 0)
+            df = sum(1 for c in corpus if token in c)
+            idf = max(0.0, math.log((N - df + 0.5) / (df + 0.5) + 1))
+            score += idf * (f * (k1 + 1)) / (f + k1 * (1 - b_val + b_val * dl / max(avg_len, 1)))
         scored.append((score, doc))
+
     scored.sort(key=lambda x: x[0], reverse=True)
     relevant = [d for s, d in scored if s > 0]
-    fallback = [d for _, d in scored]  # all docs if nothing scored
+    fallback = [d for _, d in scored]
     return _kb_budget(relevant or fallback, max_chars)[:top_k]
 
 
@@ -360,9 +396,10 @@ def _kb_initial_context(docs: list[dict], budget: int = 2000) -> str:
 
 
 class OutboundAssistant(Agent):
-    def __init__(self, base_instructions: str, kb_docs: list[dict]) -> None:
+    def __init__(self, base_instructions: str, kb_docs: list[dict], room_name: str = "") -> None:
         self._base_instructions = base_instructions
         self._kb_docs = kb_docs
+        self._room_name = room_name
         initial = base_instructions + _kb_initial_context(kb_docs) if kb_docs else base_instructions
         super().__init__(instructions=initial)
 
@@ -393,6 +430,119 @@ class OutboundAssistant(Agent):
                 object.__setattr__(self, "instructions", new_instructions)
             except Exception:
                 pass
+
+
+def _build_agent_class(tools_cfg: list, room_name: str) -> type:
+    """Dynamically build an OutboundAssistant subclass with function tools
+    configured for this call.  Returns the base class unchanged when no tools
+    are active so the LLM context is kept minimal."""
+    if not tools_cfg:
+        return OutboundAssistant
+
+    from livekit.agents import llm as _llm
+
+    methods: dict = {}
+    builtins_enabled = {t.get("builtin") for t in tools_cfg if t.get("builtin")}
+
+    if "save_lead" in builtins_enabled:
+        async def _save_lead(
+            self,
+            name: str = "",
+            email: str = "",
+            phone: str = "",
+            company: str = "",
+            notes: str = "",
+        ) -> str:
+            """Save the caller's contact information as a lead.
+            Call this whenever you have collected any of the caller's details
+            such as their name, email address, phone number, company, or notes."""
+            fields = {k: v for k, v in dict(
+                name=name, email=email, phone=phone, company=company, notes=notes
+            ).items() if v and str(v).strip()}
+            if not fields:
+                return "No contact information was provided to save."
+            asyncio.create_task(_post_back_async(
+                f"/api/calls/by-room/{self._room_name}/lead", fields
+            ))
+            return "Lead information saved."
+
+        methods["save_lead"] = _llm.function_tool(_save_lead)
+
+    if "end_call" in builtins_enabled:
+        async def _end_call(self) -> str:
+            """End the call politely when the conversation goal is complete
+            or when the caller clearly says goodbye."""
+            asyncio.create_task(_post_back_async(
+                f"/api/calls/by-room/{self._room_name}/events",
+                {"type": "ended", "reason": "agent ended call"},
+            ))
+            return "Goodbye! Have a wonderful day."
+
+        methods["end_call"] = _llm.function_tool(_end_call)
+
+    # Custom webhook tools
+    for tool_cfg in tools_cfg:
+        if tool_cfg.get("builtin"):
+            continue
+        t_name = str(tool_cfg.get("name") or "").strip().replace(" ", "_").lower()
+        if not t_name or not t_name.isidentifier():
+            continue
+        if t_name in methods:
+            continue
+        t_desc = str(tool_cfg.get("description") or f"Execute the {t_name} action")
+        t_url = str(tool_cfg.get("webhook_url") or "").strip()
+        t_params = tool_cfg.get("parameters_schema") or []
+
+        # Build typed inspect.Signature so function_tool can introspect params.
+        _type_map = {"string": str, "str": str, "number": float, "integer": int,
+                     "bool": bool, "boolean": bool}
+        sig_params = [inspect.Parameter("self", inspect.Parameter.POSITIONAL_OR_KEYWORD)]
+        annotations: dict = {"return": str}
+        for p in t_params:
+            p_name = str(p.get("name") or "").strip().replace(" ", "_")
+            if not p_name or not p_name.isidentifier():
+                continue
+            p_type = _type_map.get(str(p.get("type") or "string").lower(), str)
+            required = bool(p.get("required", False))
+            default = inspect.Parameter.empty if required else ""
+            sig_params.append(inspect.Parameter(
+                p_name, inspect.Parameter.KEYWORD_ONLY,
+                default=default, annotation=p_type,
+            ))
+            annotations[p_name] = p_type
+
+        def _make_webhook(name: str, url: str, desc: str):
+            async def _handler(self, **kwargs) -> str:
+                if url:
+                    try:
+                        payload = json.dumps({"tool": name, "args": kwargs}).encode()
+                        req = urllib.request.Request(
+                            url, data=payload,
+                            headers={"Content-Type": "application/json"},
+                            method="POST",
+                        )
+                        with urllib.request.urlopen(req, timeout=5) as r:
+                            return r.read().decode("utf-8", errors="replace")[:500] or "Done."
+                    except Exception as e:
+                        logger.warning(f"Webhook tool {name} failed: {e}")
+                        return f"Action failed: {e}"
+                return f"Action {name} noted."
+
+            _handler.__name__ = name
+            _handler.__doc__ = desc
+            _handler.__signature__ = inspect.Signature(sig_params)
+            _handler.__annotations__ = annotations
+            return _handler
+
+        try:
+            methods[t_name] = _llm.function_tool(_make_webhook(t_name, t_url, t_desc))
+        except Exception as e:
+            logger.warning(f"Could not register tool {t_name}: {e}")
+
+    if not methods:
+        return OutboundAssistant
+
+    return type("OutboundAssistantWithTools", (OutboundAssistant,), methods)
 
 
 async def entrypoint(ctx: agents.JobContext):
@@ -465,6 +615,8 @@ async def entrypoint(ctx: agents.JobContext):
     speaking_speed = float(cfg.get("speaking_speed") or 1.0)
     fillers_enabled = bool(cfg.get("fillers_enabled", True))
     custom_fillers = [str(s).strip() for s in (cfg.get("custom_fillers") or []) if str(s).strip()]
+    conversation_stages = cfg.get("conversation_stages") or []
+    tools_cfg = cfg.get("tools") or []
     sensitivity = (cfg.get("interruption_sensitivity") or "medium").strip().lower()
     # For inbound calls the caller always initiates the conversation, so the
     # default behavior is to wait for them to speak first. Agents can opt into
@@ -506,7 +658,10 @@ async def entrypoint(ctx: agents.JobContext):
             logger.debug(f"Knowledge base fetch skipped: {_e}")
 
     # Base instructions — no knowledge injected yet (done per-turn below).
-    instructions = _build_persona(user_prompt, language, speaking_speed, auto_detect)
+    instructions = _build_persona(
+        user_prompt, language, speaking_speed, auto_detect,
+        conversation_stages=conversation_stages,
+    )
 
     # For inbound calls where we wait for the caller to speak first, inject
     # the configured greeting into the instructions so the agent opens its
@@ -726,7 +881,8 @@ async def entrypoint(ctx: agents.JobContext):
         except Exception as e:
             logger.debug(f"metrics hook failed: {e}")
 
-    assistant = OutboundAssistant(instructions, kb_docs)
+    AgentClass = _build_agent_class(tools_cfg, ctx.room.name)
+    assistant = AgentClass(instructions, kb_docs, room_name=ctx.room.name)
 
     # Per-turn relevance: when the caller finishes speaking, score all knowledge
     # docs against their utterance and update the agent's instructions before the

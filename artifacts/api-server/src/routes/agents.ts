@@ -106,6 +106,56 @@ function sanitize(body: any): any {
   if (out.inbound_auto_greet !== undefined) {
     out.inbound_auto_greet = Boolean(out.inbound_auto_greet);
   }
+  if (out.conversation_stages !== undefined) {
+    if (Array.isArray(out.conversation_stages)) {
+      out.conversation_stages = (out.conversation_stages as any[])
+        .filter((s: any) => s && typeof s === "object")
+        .map((s: any) => ({
+          id: String(s.id ?? "").slice(0, 64) || `stg_${Math.random().toString(36).slice(2, 10)}`,
+          name: String(s.name ?? "").trim().slice(0, 100),
+          goal: String(s.goal ?? "").trim().slice(0, 300),
+          instructions: String(s.instructions ?? "").trim().slice(0, 2000),
+        }))
+        .slice(0, 20);
+    } else {
+      out.conversation_stages = [];
+    }
+  }
+  if (out.tools !== undefined) {
+    if (Array.isArray(out.tools)) {
+      out.tools = (out.tools as any[])
+        .filter((t: any) => t && typeof t === "object")
+        .map((t: any) => ({
+          id: String(t.id ?? "").slice(0, 64) || `tl_${Math.random().toString(36).slice(2, 10)}`,
+          name: String(t.name ?? "").trim().replace(/[^a-zA-Z0-9_]/g, "_").slice(0, 64),
+          description: String(t.description ?? "").trim().slice(0, 500),
+          webhook_url: /^https?:\/\//.test(String(t.webhook_url ?? ""))
+            ? String(t.webhook_url).slice(0, 500)
+            : "",
+          parameters_schema: Array.isArray(t.parameters_schema)
+            ? (t.parameters_schema as any[])
+                .filter((p: any) => p && typeof p === "object")
+                .map((p: any) => ({
+                  name: String(p.name ?? "").trim().replace(/[^a-zA-Z0-9_]/g, "_").slice(0, 64),
+                  type: (["string", "number", "boolean"] as string[]).includes(p.type)
+                    ? p.type
+                    : "string",
+                  description: String(p.description ?? "").trim().slice(0, 200),
+                  required: Boolean(p.required),
+                }))
+                .filter((p: any) => Boolean(p.name))
+                .slice(0, 10)
+            : [],
+          ...(t.builtin === "save_lead" || t.builtin === "end_call"
+            ? { builtin: t.builtin as "save_lead" | "end_call" }
+            : {}),
+        }))
+        .filter((t: any) => Boolean(t.name))
+        .slice(0, 10);
+    } else {
+      out.tools = [];
+    }
+  }
   return out;
 }
 

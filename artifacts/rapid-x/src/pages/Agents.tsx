@@ -31,8 +31,10 @@ import {
   Upload,
   X,
   Globe,
+  Zap,
+  PlusCircle,
 } from "lucide-react";
-import { type Agent, type KnowledgeDoc, useAgents, useCatalog, useSettings, useElevenLabsVoices, useKnowledgeDocs } from "@/lib/agents";
+import { type Agent, type KnowledgeDoc, type ConversationStage, type AgentTool, useAgents, useCatalog, useSettings, useElevenLabsVoices, useKnowledgeDocs } from "@/lib/agents";
 import { apiSend, apiUrl } from "@/lib/api";
 import {
   DEFAULT_LANGUAGE_ID,
@@ -63,9 +65,11 @@ const EMPTY: Draft = {
   inbound_enabled: false,
   inbound_auto_greet: false,
   template_id: null,
+  conversation_stages: [],
+  tools: [],
 };
 
-type Tab = "persona" | "voice" | "behavior" | "knowledge";
+type Tab = "persona" | "voice" | "behavior" | "knowledge" | "actions";
 
 export default function AgentsPage() {
   const qc = useQueryClient();
@@ -337,6 +341,7 @@ export default function AgentsPage() {
                 <SfTab active={tab === "voice"} onClick={() => setTab("voice")} icon={<Volume2 className="w-3.5 h-3.5" />} label="Voice" />
                 <SfTab active={tab === "behavior"} onClick={() => setTab("behavior")} icon={<Sliders className="w-3.5 h-3.5" />} label="Call behavior" />
                 <SfTab active={tab === "knowledge"} onClick={() => setTab("knowledge")} icon={<BookOpen className="w-3.5 h-3.5" />} label="Knowledge" />
+                <SfTab active={tab === "actions"} onClick={() => setTab("actions")} icon={<Zap className="w-3.5 h-3.5" />} label="Actions" />
               </div>
             </div>
 
@@ -392,6 +397,66 @@ export default function AgentsPage() {
                       <p className="text-[11px] text-gray-400 mt-1.5">
                         Spoken verbatim when the call connects (unless "wait for caller" is on).
                       </p>
+                    </SfSection>
+
+                    {/* Conversation script */}
+                    <SfSection title="Conversation script" subtitle="Guide the agent through structured stages. Each stage has a goal and instructions.">
+                      <SfToggle
+                        checked={(draft.conversation_stages ?? []).length > 0}
+                        onChange={(enabled) => {
+                          if (!enabled) {
+                            setDraft((d) => ({ ...d, conversation_stages: [] }));
+                          } else {
+                            setDraft((d) => ({
+                              ...d,
+                              conversation_stages: [{
+                                id: crypto.randomUUID(),
+                                name: "Introduction",
+                                goal: "Greet the caller and introduce yourself",
+                                instructions: "",
+                              }],
+                            }));
+                          }
+                        }}
+                        label="Enable conversation script"
+                        hint="When on, the agent follows a structured flow with defined stages."
+                      />
+                      {(draft.conversation_stages ?? []).length > 0 && (
+                        <div className="mt-3 space-y-3">
+                          {(draft.conversation_stages ?? []).map((stage, idx) => (
+                            <StageCard
+                              key={stage.id}
+                              index={idx}
+                              stage={stage}
+                              onUpdate={(updated) => setDraft((d) => ({
+                                ...d,
+                                conversation_stages: (d.conversation_stages ?? []).map((s, j) => j === idx ? updated : s),
+                              }))}
+                              onDelete={() => setDraft((d) => ({
+                                ...d,
+                                conversation_stages: (d.conversation_stages ?? []).filter((_, j) => j !== idx),
+                              }))}
+                            />
+                          ))}
+                          {(draft.conversation_stages ?? []).length < 20 && (
+                            <button
+                              type="button"
+                              onClick={() => setDraft((d) => ({
+                                ...d,
+                                conversation_stages: [...(d.conversation_stages ?? []), {
+                                  id: crypto.randomUUID(),
+                                  name: `Stage ${(d.conversation_stages ?? []).length + 1}`,
+                                  goal: "",
+                                  instructions: "",
+                                }],
+                              }))}
+                              className="w-full flex items-center justify-center gap-2 py-2.5 rounded-xl border border-dashed border-gray-300 text-xs font-medium text-gray-500 hover:border-violet-400 hover:text-violet-600 transition-colors"
+                            >
+                              <PlusCircle className="w-3.5 h-3.5" /> Add stage
+                            </button>
+                          )}
+                        </div>
+                      )}
                     </SfSection>
                   </>
                 )}
@@ -698,6 +763,10 @@ export default function AgentsPage() {
                   <KnowledgeTab agentId={selectedId} creating={creating} />
                 )}
 
+                {tab === "actions" && (
+                  <ActionsTab draft={draft} setDraft={setDraft} />
+                )}
+
                 {tab !== "knowledge" && (
                   <div className="pt-2 pb-8">
                     <button
@@ -723,6 +792,269 @@ export default function AgentsPage() {
           onClose={() => setTestOpen(false)}
         />
       )}
+    </div>
+  );
+}
+
+function StageCard({ index, stage, onUpdate, onDelete }: {
+  index: number;
+  stage: ConversationStage;
+  onUpdate: (s: ConversationStage) => void;
+  onDelete: () => void;
+}) {
+  return (
+    <div className="bg-gray-50 border border-gray-200 rounded-xl p-4 space-y-3">
+      <div className="flex items-center gap-2">
+        <span className="shrink-0 w-5 h-5 rounded-full bg-violet-100 text-violet-700 text-[10px] font-bold flex items-center justify-center">
+          {index + 1}
+        </span>
+        <input
+          value={stage.name}
+          onChange={(e) => onUpdate({ ...stage, name: e.target.value })}
+          placeholder="Stage name"
+          className="flex-1 px-2.5 py-1.5 bg-white border border-gray-200 rounded-lg text-sm font-medium text-gray-800 placeholder:text-gray-300 focus:outline-none focus:ring-2 focus:ring-violet-500/20 focus:border-violet-400"
+        />
+        <button
+          type="button"
+          onClick={onDelete}
+          className="shrink-0 p-1.5 rounded-lg text-gray-300 hover:text-red-500 hover:bg-red-50 transition-colors"
+        >
+          <Trash2 className="w-3.5 h-3.5" />
+        </button>
+      </div>
+      <div className="space-y-2">
+        <input
+          value={stage.goal}
+          onChange={(e) => onUpdate({ ...stage, goal: e.target.value })}
+          placeholder="Goal — what should the agent achieve in this stage?"
+          className="w-full px-2.5 py-1.5 bg-white border border-gray-200 rounded-lg text-xs text-gray-700 placeholder:text-gray-300 focus:outline-none focus:ring-2 focus:ring-violet-500/20 focus:border-violet-400"
+        />
+        <textarea
+          value={stage.instructions}
+          onChange={(e) => onUpdate({ ...stage, instructions: e.target.value })}
+          rows={2}
+          placeholder="Specific instructions for this stage (optional)"
+          className="w-full px-2.5 py-1.5 bg-white border border-gray-200 rounded-lg text-xs text-gray-700 placeholder:text-gray-300 focus:outline-none focus:ring-2 focus:ring-violet-500/20 focus:border-violet-400 resize-y"
+        />
+      </div>
+    </div>
+  );
+}
+
+function ActionsTab({ draft, setDraft }: { draft: { tools: AgentTool[] }; setDraft: React.Dispatch<React.SetStateAction<any>> }) {
+  const [showNewTool, setShowNewTool] = useState(false);
+  const [newTool, setNewTool] = useState<Omit<AgentTool, "id">>({
+    name: "", description: "", webhook_url: "", parameters_schema: [],
+  });
+  const [paramDraft, setParamDraft] = useState({ name: "", type: "string" as const, description: "", required: false });
+
+  const hasSaveLead = (draft.tools ?? []).some((t) => t.builtin === "save_lead");
+  const hasEndCall = (draft.tools ?? []).some((t) => t.builtin === "end_call");
+
+  const toggleBuiltin = (builtin: "save_lead" | "end_call", enabled: boolean) => {
+    if (enabled) {
+      const builtinDef: AgentTool = {
+        id: crypto.randomUUID(),
+        name: builtin,
+        description: builtin === "save_lead"
+          ? "Save the caller's contact information (name, email, phone, company, notes)"
+          : "End the call when the conversation goal is achieved",
+        webhook_url: "",
+        parameters_schema: [],
+        builtin,
+      };
+      setDraft((d: any) => ({ ...d, tools: [...(d.tools ?? []), builtinDef] }));
+    } else {
+      setDraft((d: any) => ({ ...d, tools: (d.tools ?? []).filter((t: AgentTool) => t.builtin !== builtin) }));
+    }
+  };
+
+  const addCustomTool = () => {
+    if (!newTool.name.trim()) return;
+    const tool: AgentTool = {
+      id: crypto.randomUUID(),
+      name: newTool.name.trim().replace(/\s+/g, "_").toLowerCase(),
+      description: newTool.description.trim(),
+      webhook_url: newTool.webhook_url.trim(),
+      parameters_schema: newTool.parameters_schema,
+    };
+    setDraft((d: any) => ({ ...d, tools: [...d.tools, tool] }));
+    setNewTool({ name: "", description: "", webhook_url: "", parameters_schema: [] });
+    setParamDraft({ name: "", type: "string", description: "", required: false });
+    setShowNewTool(false);
+  };
+
+  const deleteTool = (id: string) => {
+    setDraft((d: any) => ({ ...d, tools: (d.tools ?? []).filter((t: AgentTool) => t.id !== id) }));
+  };
+
+  const customTools = (draft.tools ?? []).filter((t) => !t.builtin);
+
+  return (
+    <div className="space-y-6">
+      {/* Built-in tools */}
+      <SfSection title="Built-in actions" subtitle="Pre-built tools the agent can call during the conversation.">
+        <div className="space-y-3">
+          <div className="flex items-start justify-between gap-3 p-3 rounded-xl bg-gray-50 border border-gray-200">
+            <div className="flex-1">
+              <div className="text-sm font-semibold text-gray-800">Save lead</div>
+              <div className="text-[11px] text-gray-400 mt-0.5">Saves the caller's name, email, phone, company or notes to the call record.</div>
+            </div>
+            <SfToggle
+              checked={hasSaveLead}
+              onChange={(b) => toggleBuiltin("save_lead", b)}
+              label=""
+            />
+          </div>
+          <div className="flex items-start justify-between gap-3 p-3 rounded-xl bg-gray-50 border border-gray-200">
+            <div className="flex-1">
+              <div className="text-sm font-semibold text-gray-800">End call</div>
+              <div className="text-[11px] text-gray-400 mt-0.5">Lets the agent politely end the call when the goal is achieved or the caller says goodbye.</div>
+            </div>
+            <SfToggle
+              checked={hasEndCall}
+              onChange={(b) => toggleBuiltin("end_call", b)}
+              label=""
+            />
+          </div>
+        </div>
+      </SfSection>
+
+      {/* Custom webhook tools */}
+      <SfSection title="Custom webhook tools" subtitle="Add your own tools backed by a webhook URL.">
+        <div className="space-y-3">
+          {customTools.length === 0 && !showNewTool && (
+            <div className="py-6 text-center">
+              <Zap className="w-7 h-7 text-gray-200 mx-auto mb-2" />
+              <p className="text-xs text-gray-400">No custom tools yet.</p>
+            </div>
+          )}
+          {customTools.map((tool) => (
+            <div key={tool.id} className="flex items-start gap-3 p-3 rounded-xl bg-gray-50 border border-gray-200">
+              <div className="flex-1 min-w-0">
+                <div className="text-sm font-semibold text-gray-800">{tool.name}</div>
+                {tool.description && <div className="text-[11px] text-gray-500 mt-0.5">{tool.description}</div>}
+                {tool.webhook_url && (
+                  <div className="text-[10px] text-gray-400 font-mono mt-1 truncate">{tool.webhook_url}</div>
+                )}
+                {tool.parameters_schema.length > 0 && (
+                  <div className="text-[10px] text-gray-400 mt-1">
+                    Params: {tool.parameters_schema.map((p) => p.name).join(", ")}
+                  </div>
+                )}
+              </div>
+              <button
+                type="button"
+                onClick={() => deleteTool(tool.id)}
+                className="shrink-0 p-1.5 rounded-lg text-gray-300 hover:text-red-500 hover:bg-red-50 transition-colors"
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+              </button>
+            </div>
+          ))}
+
+          {showNewTool && (
+            <div className="p-4 rounded-xl bg-violet-50 border border-violet-200 space-y-3">
+              <div className="text-xs font-semibold text-violet-700 uppercase tracking-wide">New tool</div>
+              <input
+                value={newTool.name}
+                onChange={(e) => setNewTool((t) => ({ ...t, name: e.target.value }))}
+                placeholder="Tool name (e.g. book_appointment)"
+                className="w-full px-3 py-2 bg-white border border-violet-200 rounded-lg text-sm text-gray-800 placeholder:text-gray-300 focus:outline-none focus:ring-2 focus:ring-violet-500/20"
+              />
+              <textarea
+                value={newTool.description}
+                onChange={(e) => setNewTool((t) => ({ ...t, description: e.target.value }))}
+                rows={2}
+                placeholder="Describe what this tool does — this is what the LLM sees"
+                className="w-full px-3 py-2 bg-white border border-violet-200 rounded-lg text-xs text-gray-700 placeholder:text-gray-300 focus:outline-none focus:ring-2 focus:ring-violet-500/20 resize-none"
+              />
+              <input
+                value={newTool.webhook_url}
+                onChange={(e) => setNewTool((t) => ({ ...t, webhook_url: e.target.value }))}
+                placeholder="https://your-server.com/webhook"
+                className="w-full px-3 py-2 bg-white border border-violet-200 rounded-lg text-xs font-mono text-gray-700 placeholder:text-gray-300 focus:outline-none focus:ring-2 focus:ring-violet-500/20"
+              />
+              {newTool.parameters_schema.length > 0 && (
+                <div className="space-y-1.5">
+                  <div className="text-[10px] font-semibold text-violet-600 uppercase tracking-wide">Parameters</div>
+                  {newTool.parameters_schema.map((p, i) => (
+                    <div key={i} className="flex items-center gap-2 text-xs">
+                      <span className="font-mono text-gray-700 flex-1">{p.name}</span>
+                      <span className="text-gray-400">{p.type}</span>
+                      {p.required && <span className="text-violet-600 font-semibold text-[10px]">required</span>}
+                      <button
+                        type="button"
+                        onClick={() => setNewTool((t) => ({ ...t, parameters_schema: t.parameters_schema.filter((_, j) => j !== i) }))}
+                        className="text-gray-300 hover:text-red-500"
+                      >
+                        <X className="w-3 h-3" />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+              {newTool.parameters_schema.length < 10 && (
+                <div className="flex gap-2 items-end">
+                  <input
+                    value={paramDraft.name}
+                    onChange={(e) => setParamDraft((p) => ({ ...p, name: e.target.value }))}
+                    placeholder="param_name"
+                    className="flex-1 px-2.5 py-1.5 bg-white border border-violet-200 rounded-lg text-xs font-mono placeholder:text-gray-300 focus:outline-none focus:ring-1 focus:ring-violet-400"
+                  />
+                  <select
+                    value={paramDraft.type}
+                    onChange={(e) => setParamDraft((p) => ({ ...p, type: e.target.value as any }))}
+                    className="px-2 py-1.5 bg-white border border-violet-200 rounded-lg text-xs focus:outline-none"
+                  >
+                    <option value="string">string</option>
+                    <option value="number">number</option>
+                    <option value="boolean">boolean</option>
+                  </select>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (!paramDraft.name.trim()) return;
+                      setNewTool((t) => ({ ...t, parameters_schema: [...t.parameters_schema, { ...paramDraft, name: paramDraft.name.trim() }] }));
+                      setParamDraft({ name: "", type: "string", description: "", required: false });
+                    }}
+                    className="px-2.5 py-1.5 bg-violet-600 text-white rounded-lg text-xs font-semibold hover:bg-violet-700"
+                  >
+                    + Param
+                  </button>
+                </div>
+              )}
+              <div className="flex gap-2 pt-1">
+                <button
+                  type="button"
+                  onClick={addCustomTool}
+                  disabled={!newTool.name.trim()}
+                  className="px-3.5 py-2 bg-violet-600 text-white rounded-lg text-xs font-semibold hover:bg-violet-700 disabled:opacity-40"
+                >
+                  Add tool
+                </button>
+                <button
+                  type="button"
+                  onClick={() => { setShowNewTool(false); setNewTool({ name: "", description: "", webhook_url: "", parameters_schema: [] }); }}
+                  className="px-3.5 py-2 text-gray-500 hover:text-gray-700 rounded-lg text-xs font-medium border border-gray-200 hover:bg-gray-50"
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+          )}
+
+          {!showNewTool && customTools.length < 10 && (
+            <button
+              type="button"
+              onClick={() => setShowNewTool(true)}
+              className="w-full flex items-center justify-center gap-2 py-2.5 rounded-xl border border-dashed border-gray-300 text-xs font-medium text-gray-500 hover:border-violet-400 hover:text-violet-600 transition-colors"
+            >
+              <PlusCircle className="w-3.5 h-3.5" /> Add webhook tool
+            </button>
+          )}
+        </div>
+      </SfSection>
     </div>
   );
 }
