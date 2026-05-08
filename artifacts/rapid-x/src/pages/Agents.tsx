@@ -822,7 +822,7 @@ export default function AgentsPage() {
   );
 }
 
-function StageCard({ index, total, stage, onUpdate, onDelete, onMoveUp, onMoveDown, onDragStart, onDragOver, onDrop }: {
+function StageCard({ index, total, stage, onUpdate, onDelete, onMoveUp, onMoveDown, onDragStart, onDragOver, onDrop, initiallyExpanded }: {
   index: number;
   total: number;
   stage: ConversationStage;
@@ -833,26 +833,32 @@ function StageCard({ index, total, stage, onUpdate, onDelete, onMoveUp, onMoveDo
   onDragStart?: (e: React.DragEvent) => void;
   onDragOver?: (e: React.DragEvent) => void;
   onDrop?: (e: React.DragEvent) => void;
+  initiallyExpanded?: boolean;
 }) {
+  const [expanded, setExpanded] = useState(initiallyExpanded ?? false);
   return (
     <div
       draggable
       onDragStart={onDragStart}
       onDragOver={onDragOver}
       onDrop={onDrop}
-      className="bg-gray-50 border border-gray-200 rounded-xl p-4 space-y-3 cursor-grab active:cursor-grabbing active:opacity-60 active:border-violet-300"
+      className={`border rounded-xl transition-colors ${expanded ? "bg-violet-50/40 border-violet-200" : "bg-gray-50 border-gray-200"} cursor-grab active:cursor-grabbing active:opacity-60`}
     >
-      <div className="flex items-center gap-2">
+      {/* Collapsed header — always visible */}
+      <div
+        className="flex items-center gap-2 px-4 py-3 cursor-pointer select-none"
+        onClick={() => setExpanded((v) => !v)}
+      >
         <span className="shrink-0 w-5 h-5 rounded-full bg-violet-100 text-violet-700 text-[10px] font-bold flex items-center justify-center">
           {index + 1}
         </span>
-        <input
-          value={stage.name}
-          onChange={(e) => onUpdate({ ...stage, name: e.target.value })}
-          placeholder="Stage name"
-          className="flex-1 px-2.5 py-1.5 bg-white border border-gray-200 rounded-lg text-sm font-medium text-gray-800 placeholder:text-gray-300 focus:outline-none focus:ring-2 focus:ring-violet-500/20 focus:border-violet-400"
-        />
-        <div className="flex items-center gap-0.5">
+        <span className="flex-1 text-sm font-medium text-gray-800 truncate">
+          {stage.name || <span className="text-gray-400 font-normal">Untitled stage</span>}
+        </span>
+        {stage.goal && !expanded && (
+          <span className="text-[10px] text-gray-400 truncate max-w-[180px]">{stage.goal}</span>
+        )}
+        <div className="flex items-center gap-0.5" onClick={(e) => e.stopPropagation()}>
           <button
             type="button"
             onClick={onMoveUp}
@@ -879,22 +885,35 @@ function StageCard({ index, total, stage, onUpdate, onDelete, onMoveUp, onMoveDo
             <Trash2 className="w-3.5 h-3.5" />
           </button>
         </div>
+        <ChevronDown className={`w-3.5 h-3.5 text-gray-400 shrink-0 transition-transform ${expanded ? "rotate-180" : ""}`} />
       </div>
-      <div className="space-y-2">
-        <input
-          value={stage.goal}
-          onChange={(e) => onUpdate({ ...stage, goal: e.target.value })}
-          placeholder="Goal — what should the agent achieve in this stage?"
-          className="w-full px-2.5 py-1.5 bg-white border border-gray-200 rounded-lg text-xs text-gray-700 placeholder:text-gray-300 focus:outline-none focus:ring-2 focus:ring-violet-500/20 focus:border-violet-400"
-        />
-        <textarea
-          value={stage.instructions}
-          onChange={(e) => onUpdate({ ...stage, instructions: e.target.value })}
-          rows={2}
-          placeholder="Specific instructions for this stage (optional)"
-          className="w-full px-2.5 py-1.5 bg-white border border-gray-200 rounded-lg text-xs text-gray-700 placeholder:text-gray-300 focus:outline-none focus:ring-2 focus:ring-violet-500/20 focus:border-violet-400 resize-y"
-        />
-      </div>
+
+      {/* Expanded editor */}
+      {expanded && (
+        <div className="px-4 pb-4 space-y-2 border-t border-violet-100">
+          <div className="pt-3">
+            <input
+              value={stage.name}
+              onChange={(e) => onUpdate({ ...stage, name: e.target.value })}
+              placeholder="Stage name"
+              className="w-full px-2.5 py-1.5 bg-white border border-gray-200 rounded-lg text-sm font-medium text-gray-800 placeholder:text-gray-300 focus:outline-none focus:ring-2 focus:ring-violet-500/20 focus:border-violet-400"
+            />
+          </div>
+          <input
+            value={stage.goal}
+            onChange={(e) => onUpdate({ ...stage, goal: e.target.value })}
+            placeholder="Goal — what should the agent achieve in this stage?"
+            className="w-full px-2.5 py-1.5 bg-white border border-gray-200 rounded-lg text-xs text-gray-700 placeholder:text-gray-300 focus:outline-none focus:ring-2 focus:ring-violet-500/20 focus:border-violet-400"
+          />
+          <textarea
+            value={stage.instructions}
+            onChange={(e) => onUpdate({ ...stage, instructions: e.target.value })}
+            rows={2}
+            placeholder="Specific instructions for this stage (optional)"
+            className="w-full px-2.5 py-1.5 bg-white border border-gray-200 rounded-lg text-xs text-gray-700 placeholder:text-gray-300 focus:outline-none focus:ring-2 focus:ring-violet-500/20 focus:border-violet-400 resize-y"
+          />
+        </div>
+      )}
     </div>
   );
 }

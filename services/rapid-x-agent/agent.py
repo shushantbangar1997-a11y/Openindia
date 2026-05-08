@@ -567,12 +567,19 @@ def _build_agent_class(tools_cfg: list, room_name: str, call_state: dict) -> typ
                 continue
             p_type = _type_map.get(str(p.get("type") or "string").lower(), str)
             required = bool(p.get("required", False))
-            default = inspect.Parameter.empty if required else ""
+            if required:
+                default = inspect.Parameter.empty
+                ann_type = p_type
+            else:
+                # Use None for optional params so callers can omit them without
+                # a string-default being silently coerced to float/bool.
+                default = None
+                ann_type = Optional[p_type]  # type: ignore[valid-type]
             sig_params.append(inspect.Parameter(
                 p_name, inspect.Parameter.KEYWORD_ONLY,
-                default=default, annotation=p_type,
+                default=default, annotation=ann_type,
             ))
-            annotations[p_name] = p_type
+            annotations[p_name] = ann_type
 
         def _make_webhook(name: str, url: str, desc: str):
             async def _handler(self, **kwargs) -> str:
