@@ -139,13 +139,21 @@ type DocBody = {
 };
 
 // ── Route handlers ──────────────────────────────────────────────────────────
+function makeExcerpt(content: string, maxLen = 300): string {
+  const text = content.trim();
+  return text.length <= maxLen ? text : `${text.slice(0, maxLen)}…`;
+}
+
 const listDocs: RequestHandler = async (req, res) => {
   const agentId = String(req.params["id"]);
   if (!(await getAgent(agentId))) {
     res.status(404).json({ error: "Agent not found" });
     return;
   }
-  res.json({ docs: await listKnowledgeDocs(agentId) });
+  const docs = await listKnowledgeDocs(agentId);
+  res.json({
+    docs: docs.map((d) => ({ ...d, excerpt: makeExcerpt(d.content) })),
+  });
 };
 
 async function handleAddDoc(

@@ -79,6 +79,26 @@ if _missing:
     raise RuntimeError(f"Missing required env vars: {', '.join(_missing)}")
 
 INTERNAL_API_URL = os.getenv("INTERNAL_API_URL", "http://localhost:8080").rstrip("/")
+# Written once per job by _load_internal_token(); used in _post_back so every
+# internal callback includes the shared secret the api-server requires.
+_INTERNAL_TOKEN: str = ""
+
+
+def _load_internal_token() -> str:
+    """Return the shared INTERNAL_API_TOKEN, reading it from the token file
+    on disk if the env var is absent.  Sets the module-level cache."""
+    global _INTERNAL_TOKEN
+    token = os.getenv("INTERNAL_API_TOKEN", "")
+    if not token:
+        try:
+            import tempfile
+            token_path = os.path.join(tempfile.gettempdir(), "rapid-x", "internal_token")
+            with open(token_path, "r") as f:
+                token = f.read().strip()
+        except Exception:
+            pass
+    _INTERNAL_TOKEN = token
+    return token
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("rapid-x-agent")
@@ -209,9 +229,10 @@ def _post_back(path: str, payload: dict) -> None:
     try:
         url = f"{INTERNAL_API_URL}{path}"
         data = json.dumps(payload).encode("utf-8")
-        req = urllib.request.Request(
-            url, data=data, headers={"Content-Type": "application/json"}
-        )
+        headers: dict[str, str] = {"Content-Type": "application/json"}
+        if _INTERNAL_TOKEN:
+            headers["x-internal-token"] = _INTERNAL_TOKEN
+        req = urllib.request.Request(url, data=data, headers=headers)
         urllib.request.urlopen(req, timeout=3).read()
     except Exception as e:
         logger.debug(f"post_back {path} failed: {e}")
@@ -321,14 +342,17 @@ import re as _re
 
 
 def _rank_kb_docs(docs: list[dict], query: str, top_k: int = 3, max_chars: int = 4000) -> list[dict]:
-    """BM25 document ranking (k1=1.5, b=0.75) — better recall for short voice queries.
+    """BM25 document ranking (k1=1.5, b=0.75) with unigram + bigram tokens.
 
-    Returns up to `top_k` docs whose combined content fits within `max_chars`,
-    ranked by BM25 score."""
+    Bigrams improve recall for voiced compound terms (e.g. "business hours",
+    "return policy") that are less likely to match on unigrams alone.
+    Returns up to `top_k` docs whose combined content fits within `max_chars`."""
     STOP = {"a", "an", "the", "is", "it", "to", "i", "and", "or", "of", "do", "you", "what", "in", "on", "at"}
 
     def _tok(text: str) -> list[str]:
-        return [w for w in _re.findall(r'\w+', text.lower()) if w not in STOP and len(w) > 1]
+        words = [w for w in _re.findall(r'\w+', text.lower()) if w not in STOP and len(w) > 1]
+        bigrams = [f"{words[j]}_{words[j+1]}" for j in range(len(words) - 1)]
+        return words + bigrams
 
     query_tokens = set(_tok(query))
     if not query_tokens:
@@ -432,10 +456,14 @@ class OutboundAssistant(Agent):
                 pass
 
 
-def _build_agent_class(tools_cfg: list, room_name: str) -> type:
+def _build_agent_class(tools_cfg: list, room_name: str, call_state: dict) -> type:
     """Dynamically build an OutboundAssistant subclass with function tools
     configured for this call.  Returns the base class unchanged when no tools
-    are active so the LLM context is kept minimal."""
+    are active so the LLM context is kept minimal.
+
+    call_state is a mutable dict that gets populated by the entrypoint AFTER
+    this function returns (but BEFORE any tool can be invoked), so closures
+    that reference it see the live session / end_fut objects."""
     if not tools_cfg:
         return OutboundAssistant
 
@@ -469,16 +497,26 @@ def _build_agent_class(tools_cfg: list, room_name: str) -> type:
         methods["save_lead"] = _llm.function_tool(_save_lead)
 
     if "end_call" in builtins_enabled:
-        async def _end_call(self) -> str:
-            """End the call politely when the conversation goal is complete
-            or when the caller clearly says goodbye."""
-            asyncio.create_task(_post_back_async(
-                f"/api/calls/by-room/{self._room_name}/events",
-                {"type": "ended", "reason": "agent ended call"},
-            ))
-            return "Goodbye! Have a wonderful day."
+        def _make_end_call(cs: dict):
+            async def _end_call(self) -> str:
+                """End the call politely when the conversation goal is complete
+                or when the caller clearly says goodbye."""
+                # Interrupt any in-progress TTS/LLM generation immediately.
+                session = cs.get("session")
+                if session is not None:
+                    try:
+                        session.interrupt()
+                    except Exception:
+                        pass
+                # Resolve the end_fut so the entrypoint tears down and posts
+                # the ended event to the api-server (avoids double-posting).
+                end_fut = cs.get("end_fut")
+                if end_fut is not None and not end_fut.done():
+                    end_fut.set_result("agent ended call")
+                return "Goodbye! Have a wonderful day."
+            return _end_call
 
-        methods["end_call"] = _llm.function_tool(_end_call)
+        methods["end_call"] = _llm.function_tool(_make_end_call(call_state))
 
     # Custom webhook tools
     for tool_cfg in tools_cfg:
@@ -515,14 +553,29 @@ def _build_agent_class(tools_cfg: list, room_name: str) -> type:
             async def _handler(self, **kwargs) -> str:
                 if url:
                     try:
-                        payload = json.dumps({"tool": name, "args": kwargs}).encode()
+                        payload_obj = {
+                            "room": self._room_name,
+                            "tool_name": name,
+                            "arguments": kwargs,
+                        }
+                        payload_bytes = json.dumps(payload_obj).encode()
+                        headers: dict[str, str] = {"Content-Type": "application/json"}
+                        if _INTERNAL_TOKEN:
+                            headers["x-internal-token"] = _INTERNAL_TOKEN
                         req = urllib.request.Request(
-                            url, data=payload,
-                            headers={"Content-Type": "application/json"},
+                            url, data=payload_bytes,
+                            headers=headers,
                             method="POST",
                         )
-                        with urllib.request.urlopen(req, timeout=5) as r:
-                            return r.read().decode("utf-8", errors="replace")[:500] or "Done."
+                        with urllib.request.urlopen(req, timeout=3) as r:
+                            raw = r.read().decode("utf-8", errors="replace")
+                        try:
+                            parsed = json.loads(raw)
+                            if isinstance(parsed, dict) and "message" in parsed:
+                                return str(parsed["message"])[:500]
+                            return str(parsed)[:500]
+                        except json.JSONDecodeError:
+                            return raw[:500] or "Done."
                     except Exception as e:
                         logger.warning(f"Webhook tool {name} failed: {e}")
                         return f"Action failed: {e}"
@@ -583,20 +636,13 @@ async def entrypoint(ctx: agents.JobContext):
     # Keys live as locals only — no os.environ mutation = no cross-call bleed.
     eleven_key = ""
     cartesia_key = ""
+    # Load internal token once per job, setting the module-level _INTERNAL_TOKEN
+    # so all _post_back calls automatically include it.
+    internal_token = _load_internal_token()
+
     agent_id = (cfg.get("agent_id") or "").strip()
     if agent_id:
         try:
-            # Shared secret, written by the api-server on startup. Required
-            # in addition to the loopback check on the internal endpoint.
-            internal_token = os.getenv("INTERNAL_API_TOKEN", "")
-            if not internal_token:
-                try:
-                    import tempfile
-                    token_path = os.path.join(tempfile.gettempdir(), "rapid-x", "internal_token")
-                    with open(token_path, "r") as f:
-                        internal_token = f.read().strip()
-                except Exception:
-                    pass
             keys_url = f"{INTERNAL_API_URL}/api/internal/agents/{agent_id}/keys"
             req = urllib.request.Request(
                 keys_url, headers={"x-internal-token": internal_token}
@@ -607,6 +653,7 @@ async def entrypoint(ctx: agents.JobContext):
                 cartesia_key = (keys_blob.get("cartesia") or "").strip()
         except Exception as e:
             logger.debug(f"Per-agent key fetch failed (using env vars): {e}")
+
     voice_id = (cfg.get("voice_id") or "aura-2-thalia-en").strip()
     language = (cfg.get("language") or "en-US").strip()
     auto_detect = bool(cfg.get("auto_detect_language"))
@@ -637,18 +684,9 @@ async def entrypoint(ctx: agents.JobContext):
     kb_docs: list[dict] = []
     if agent_id:
         try:
-            internal_token_for_kb = os.getenv("INTERNAL_API_TOKEN", "")
-            if not internal_token_for_kb:
-                try:
-                    import tempfile
-                    _tp = os.path.join(tempfile.gettempdir(), "rapid-x", "internal_token")
-                    with open(_tp, "r") as _f:
-                        internal_token_for_kb = _f.read().strip()
-                except Exception:
-                    pass
             kb_url = f"{INTERNAL_API_URL}/api/internal/agents/{agent_id}/knowledge"
             kb_req = urllib.request.Request(
-                kb_url, headers={"x-internal-token": internal_token_for_kb}
+                kb_url, headers={"x-internal-token": internal_token}
             )
             with urllib.request.urlopen(kb_req, timeout=3) as _r:
                 kb_docs = json.loads(_r.read()).get("docs") or []
@@ -723,6 +761,7 @@ async def entrypoint(ctx: agents.JobContext):
     if turn_detection is not None:
         session_kwargs["turn_detection"] = turn_detection
     session = AgentSession(**session_kwargs)
+    call_state["session"] = session
 
     # Stream conversation turns back to the api-server for the transcript view.
     @session.on("conversation_item_added")
@@ -881,7 +920,10 @@ async def entrypoint(ctx: agents.JobContext):
         except Exception as e:
             logger.debug(f"metrics hook failed: {e}")
 
-    AgentClass = _build_agent_class(tools_cfg, ctx.room.name)
+    # call_state is a mutable dict filled in below (after session + end_fut are
+    # created) so tool closures (end_call in particular) can reference them.
+    call_state: dict = {}
+    AgentClass = _build_agent_class(tools_cfg, ctx.room.name, call_state)
     assistant = AgentClass(instructions, kb_docs, room_name=ctx.room.name)
 
     # Per-turn relevance: when the caller finishes speaking, score all knowledge
@@ -924,6 +966,7 @@ async def entrypoint(ctx: agents.JobContext):
 
     # End-of-call detection.
     end_fut: asyncio.Future[str] = asyncio.get_running_loop().create_future()
+    call_state["end_fut"] = end_fut
 
     def _on_leave(p: rtc.RemoteParticipant) -> None:
         if not end_fut.done() and p.identity == callee.identity:

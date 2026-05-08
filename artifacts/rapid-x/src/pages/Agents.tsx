@@ -18,6 +18,8 @@ import {
   Copy,
   Sparkles,
   ChevronRight,
+  ChevronUp,
+  ChevronDown,
   Search,
   MoreHorizontal,
   Brain,
@@ -427,6 +429,7 @@ export default function AgentsPage() {
                             <StageCard
                               key={stage.id}
                               index={idx}
+                              total={(draft.conversation_stages ?? []).length}
                               stage={stage}
                               onUpdate={(updated) => setDraft((d) => ({
                                 ...d,
@@ -436,6 +439,16 @@ export default function AgentsPage() {
                                 ...d,
                                 conversation_stages: (d.conversation_stages ?? []).filter((_, j) => j !== idx),
                               }))}
+                              onMoveUp={idx === 0 ? undefined : () => setDraft((d) => {
+                                const arr = [...(d.conversation_stages ?? [])];
+                                [arr[idx - 1], arr[idx]] = [arr[idx]!, arr[idx - 1]!];
+                                return { ...d, conversation_stages: arr };
+                              })}
+                              onMoveDown={idx === (draft.conversation_stages ?? []).length - 1 ? undefined : () => setDraft((d) => {
+                                const arr = [...(d.conversation_stages ?? [])];
+                                [arr[idx], arr[idx + 1]] = [arr[idx + 1]!, arr[idx]!];
+                                return { ...d, conversation_stages: arr };
+                              })}
                             />
                           ))}
                           {(draft.conversation_stages ?? []).length < 20 && (
@@ -796,11 +809,14 @@ export default function AgentsPage() {
   );
 }
 
-function StageCard({ index, stage, onUpdate, onDelete }: {
+function StageCard({ index, total, stage, onUpdate, onDelete, onMoveUp, onMoveDown }: {
   index: number;
+  total: number;
   stage: ConversationStage;
   onUpdate: (s: ConversationStage) => void;
   onDelete: () => void;
+  onMoveUp?: () => void;
+  onMoveDown?: () => void;
 }) {
   return (
     <div className="bg-gray-50 border border-gray-200 rounded-xl p-4 space-y-3">
@@ -814,13 +830,33 @@ function StageCard({ index, stage, onUpdate, onDelete }: {
           placeholder="Stage name"
           className="flex-1 px-2.5 py-1.5 bg-white border border-gray-200 rounded-lg text-sm font-medium text-gray-800 placeholder:text-gray-300 focus:outline-none focus:ring-2 focus:ring-violet-500/20 focus:border-violet-400"
         />
-        <button
-          type="button"
-          onClick={onDelete}
-          className="shrink-0 p-1.5 rounded-lg text-gray-300 hover:text-red-500 hover:bg-red-50 transition-colors"
-        >
-          <Trash2 className="w-3.5 h-3.5" />
-        </button>
+        <div className="flex items-center gap-0.5">
+          <button
+            type="button"
+            onClick={onMoveUp}
+            disabled={index === 0}
+            className="p-1.5 rounded-lg text-gray-300 hover:text-gray-600 hover:bg-gray-100 disabled:opacity-30 disabled:pointer-events-none transition-colors"
+            aria-label="Move stage up"
+          >
+            <ChevronUp className="w-3.5 h-3.5" />
+          </button>
+          <button
+            type="button"
+            onClick={onMoveDown}
+            disabled={index === total - 1}
+            className="p-1.5 rounded-lg text-gray-300 hover:text-gray-600 hover:bg-gray-100 disabled:opacity-30 disabled:pointer-events-none transition-colors"
+            aria-label="Move stage down"
+          >
+            <ChevronDown className="w-3.5 h-3.5" />
+          </button>
+          <button
+            type="button"
+            onClick={onDelete}
+            className="p-1.5 rounded-lg text-gray-300 hover:text-red-500 hover:bg-red-50 transition-colors"
+          >
+            <Trash2 className="w-3.5 h-3.5" />
+          </button>
+        </div>
       </div>
       <div className="space-y-2">
         <input
@@ -841,7 +877,7 @@ function StageCard({ index, stage, onUpdate, onDelete }: {
   );
 }
 
-function ActionsTab({ draft, setDraft }: { draft: { tools: AgentTool[] }; setDraft: React.Dispatch<React.SetStateAction<any>> }) {
+function ActionsTab({ draft, setDraft }: { draft: Pick<Draft, "tools">; setDraft: React.Dispatch<React.SetStateAction<Draft>> }) {
   const [showNewTool, setShowNewTool] = useState(false);
   const [newTool, setNewTool] = useState<Omit<AgentTool, "id">>({
     name: "", description: "", webhook_url: "", parameters_schema: [],
@@ -863,9 +899,9 @@ function ActionsTab({ draft, setDraft }: { draft: { tools: AgentTool[] }; setDra
         parameters_schema: [],
         builtin,
       };
-      setDraft((d: any) => ({ ...d, tools: [...(d.tools ?? []), builtinDef] }));
+      setDraft((d) => ({ ...d, tools: [...(d.tools ?? []), builtinDef] }));
     } else {
-      setDraft((d: any) => ({ ...d, tools: (d.tools ?? []).filter((t: AgentTool) => t.builtin !== builtin) }));
+      setDraft((d) => ({ ...d, tools: (d.tools ?? []).filter((t) => t.builtin !== builtin) }));
     }
   };
 
@@ -878,14 +914,14 @@ function ActionsTab({ draft, setDraft }: { draft: { tools: AgentTool[] }; setDra
       webhook_url: newTool.webhook_url.trim(),
       parameters_schema: newTool.parameters_schema,
     };
-    setDraft((d: any) => ({ ...d, tools: [...d.tools, tool] }));
+    setDraft((d) => ({ ...d, tools: [...(d.tools ?? []), tool] }));
     setNewTool({ name: "", description: "", webhook_url: "", parameters_schema: [] });
     setParamDraft({ name: "", type: "string", description: "", required: false });
     setShowNewTool(false);
   };
 
   const deleteTool = (id: string) => {
-    setDraft((d: any) => ({ ...d, tools: (d.tools ?? []).filter((t: AgentTool) => t.id !== id) }));
+    setDraft((d) => ({ ...d, tools: (d.tools ?? []).filter((t) => t.id !== id) }));
   };
 
   const customTools = (draft.tools ?? []).filter((t) => !t.builtin);
@@ -1175,6 +1211,7 @@ function KnowledgeTab({ agentId, creating }: { agentId: string | null; creating:
   const [adding, setAdding] = useState(false);
   const [error, setError] = useState("");
   const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [expandedDocId, setExpandedDocId] = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement | null>(null);
 
   if (creating) {
@@ -1415,16 +1452,38 @@ function KnowledgeTab({ agentId, creating }: { agentId: string | null; creating:
                     )}
                   </div>
                   <div className="flex-1 min-w-0">
-                    <div className="text-sm font-medium text-gray-800 truncate">{doc.title}</div>
+                    <div className="flex items-center gap-2">
+                      <div className="text-sm font-medium text-gray-800 truncate flex-1">{doc.title}</div>
+                      {(doc.excerpt || doc.content) && (
+                        <button
+                          type="button"
+                          onClick={() => setExpandedDocId(expandedDocId === doc.id ? null : doc.id)}
+                          className="shrink-0 flex items-center gap-1 text-[10px] text-gray-400 hover:text-violet-600 transition-colors font-medium"
+                        >
+                          {expandedDocId === doc.id ? (
+                            <><ChevronUp className="w-3 h-3" />Hide</>
+                          ) : (
+                            <><ChevronDown className="w-3 h-3" />Preview</>
+                          )}
+                        </button>
+                      )}
+                    </div>
                     <div className="text-[11px] text-gray-400 mt-0.5 truncate">
                       {doc.source_type === "url" && doc.source_url ? (
                         <a href={doc.source_url} target="_blank" rel="noreferrer" className="hover:text-violet-500 underline">
                           {doc.source_url}
                         </a>
                       ) : (
-                        <span>{doc.content.slice(0, 80)}{doc.content.length > 80 ? "…" : ""}</span>
+                        <span className={expandedDocId === doc.id ? "hidden" : ""}>
+                          {(doc.excerpt ?? doc.content).slice(0, 80)}{(doc.excerpt ?? doc.content).length > 80 ? "…" : ""}
+                        </span>
                       )}
                     </div>
+                    {expandedDocId === doc.id && (
+                      <div className="mt-2 px-2.5 py-2 rounded-lg bg-white border border-gray-100 text-[11px] text-gray-600 leading-relaxed whitespace-pre-wrap break-words max-h-40 overflow-y-auto">
+                        {doc.excerpt ?? doc.content}
+                      </div>
+                    )}
                     <div className="text-[10px] text-gray-300 mt-1">
                       {doc.source_type.toUpperCase()} · {new Date(doc.created_at).toLocaleDateString()} · {sizeLabel}
                     </div>

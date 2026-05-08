@@ -136,6 +136,7 @@ export type KnowledgeDoc = {
   agent_id: string;
   title: string;
   content: string;
+  excerpt?: string;
   size: number;
   source_type: "text" | "url" | "file";
   source_url?: string;

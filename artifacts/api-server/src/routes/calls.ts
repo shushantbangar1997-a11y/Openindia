@@ -8,6 +8,7 @@ import {
   type LeadData,
 } from "../lib/db";
 import { summariseCall } from "../lib/summarize";
+import { getInternalToken } from "../lib/internal-token";
 
 // Lightweight in-memory guard: tracks rooms whose summary job is in flight.
 const _summarising = new Set<string>();
@@ -140,7 +141,15 @@ const transcript: RequestHandler = async (req, res) => {
 };
 
 // Internal callback from the agent worker: saves caller contact info.
+// Requires loopback source IP + shared x-internal-token (same guard as /internal/agents).
 const lead: RequestHandler = async (req, res) => {
+  const remote = req.socket.remoteAddress ?? "";
+  const isLoopback = ["127.0.0.1", "::1", "::ffff:127.0.0.1"].includes(remote);
+  const token = req.header("x-internal-token") ?? "";
+  if (!isLoopback || token !== getInternalToken()) {
+    res.status(403).json({ error: "forbidden" });
+    return;
+  }
   const room = String(req.params["room"]);
   const body = (req.body ?? {}) as Record<string, unknown>;
   const data: LeadData = {};
