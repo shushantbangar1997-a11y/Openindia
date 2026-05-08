@@ -238,6 +238,23 @@ def _post_back(path: str, payload: dict) -> None:
         logger.debug(f"post_back {path} failed: {e}")
 
 
+def _post_back_json(path: str, payload: dict) -> dict:
+    """Like _post_back but returns the parsed JSON response body (or {}).
+    Used when the caller needs data from the response (e.g. call_id)."""
+    try:
+        url = f"{INTERNAL_API_URL}{path}"
+        data = json.dumps(payload).encode("utf-8")
+        headers: dict[str, str] = {"Content-Type": "application/json"}
+        if _INTERNAL_TOKEN:
+            headers["x-internal-token"] = _INTERNAL_TOKEN
+        req = urllib.request.Request(url, data=data, headers=headers)
+        with urllib.request.urlopen(req, timeout=3) as r:
+            return json.loads(r.read())
+    except Exception as e:
+        logger.debug(f"post_back_json {path} failed: {e}")
+        return {}
+
+
 async def _post_back_async(path: str, payload: dict) -> None:
     await asyncio.to_thread(_post_back, path, payload)
 
@@ -513,6 +530,14 @@ def _build_agent_class(tools_cfg: list, room_name: str, call_state: dict) -> typ
                 end_fut = cs.get("end_fut")
                 if end_fut is not None and not end_fut.done():
                     end_fut.set_result("agent ended call")
+                # Explicitly shut down the job context — belt-and-suspenders on
+                # top of end_fut in case something stalls in the event loop.
+                job_ctx = cs.get("ctx")
+                if job_ctx is not None:
+                    try:
+                        asyncio.create_task(job_ctx.shutdown(reason="agent ended call"))
+                    except Exception:
+                        pass
                 return "Goodbye! Have a wonderful day."
             return _end_call
 
@@ -554,17 +579,16 @@ def _build_agent_class(tools_cfg: list, room_name: str, call_state: dict) -> typ
                 if url:
                     try:
                         payload_obj = {
+                            "call_id": call_state.get("call_id") or "",
                             "room": self._room_name,
                             "tool_name": name,
                             "arguments": kwargs,
                         }
                         payload_bytes = json.dumps(payload_obj).encode()
-                        headers: dict[str, str] = {"Content-Type": "application/json"}
-                        if _INTERNAL_TOKEN:
-                            headers["x-internal-token"] = _INTERNAL_TOKEN
+                        # External webhook — do NOT include the internal token.
                         req = urllib.request.Request(
                             url, data=payload_bytes,
-                            headers=headers,
+                            headers={"Content-Type": "application/json"},
                             method="POST",
                         )
                         with urllib.request.urlopen(req, timeout=3) as r:
@@ -731,10 +755,19 @@ async def entrypoint(ctx: agents.JobContext):
         return
 
     logger.info(f"Callee joined: {callee.identity} (mode={mode or 'phone'})")
-    await _post_back_async(
+
+    # Initialise call_state early so all subsequent closures (session events,
+    # tool callbacks) can safely write/read it.  ctx and call_id are available
+    # now; session and end_fut are filled in below as they are created.
+    call_state: dict = {"ctx": ctx, "call_id": "", "session": None, "end_fut": None}
+
+    # Post the answered event and capture the call_id from the API response.
+    _answered_resp = await asyncio.to_thread(
+        _post_back_json,
         f"/api/calls/by-room/{ctx.room.name}/events",
         {"type": "answered"},
     )
+    call_state["call_id"] = ((_answered_resp.get("call") or {}).get("id") or "")
 
     # Turn detection: prefer LiveKit's MultilingualModel — it understands
     # natural pauses, hedging and code-switching far better than raw VAD.
@@ -761,7 +794,7 @@ async def entrypoint(ctx: agents.JobContext):
     if turn_detection is not None:
         session_kwargs["turn_detection"] = turn_detection
     session = AgentSession(**session_kwargs)
-    call_state["session"] = session
+    call_state["session"] = session  # call_state already exists from above
 
     # Stream conversation turns back to the api-server for the transcript view.
     @session.on("conversation_item_added")
@@ -920,9 +953,9 @@ async def entrypoint(ctx: agents.JobContext):
         except Exception as e:
             logger.debug(f"metrics hook failed: {e}")
 
-    # call_state is a mutable dict filled in below (after session + end_fut are
-    # created) so tool closures (end_call in particular) can reference them.
-    call_state: dict = {}
+    # call_state was initialised after callee joined (above). Pass it to the
+    # agent class builder so tool closures (end_call in particular) can
+    # reference the live session / end_fut / ctx objects.
     AgentClass = _build_agent_class(tools_cfg, ctx.room.name, call_state)
     assistant = AgentClass(instructions, kb_docs, room_name=ctx.room.name)
 
@@ -966,7 +999,7 @@ async def entrypoint(ctx: agents.JobContext):
 
     # End-of-call detection.
     end_fut: asyncio.Future[str] = asyncio.get_running_loop().create_future()
-    call_state["end_fut"] = end_fut
+    call_state["end_fut"] = end_fut  # lets end_call tool resolve it directly
 
     def _on_leave(p: rtc.RemoteParticipant) -> None:
         if not end_fut.done() and p.identity == callee.identity:
