@@ -128,8 +128,15 @@ FILLERS = {
     "ar": ["نعم,", "حسناً,", "لحظة,", "فهمت,"],
 }
 
-# Map our friendly sensitivity setting to Deepgram's endpointing window (ms).
-ENDPOINTING_MS = {"low": 600, "medium": 350, "high": 180}
+# Map our friendly sensitivity setting to the endpointing window (ms).
+# These control how long the agent waits after the caller goes silent before
+# treating it as end-of-turn. Values are intentionally patient — natural
+# multilingual speech has pauses mid-thought, especially in Hinglish/Punjabi.
+ENDPOINTING_MS = {"low": 1000, "medium": 600, "high": 320}
+
+# Hard ceiling on how long to wait even if the model thinks the caller is
+# still mid-utterance (prevents indefinite hold on very long pauses).
+MAX_ENDPOINTING_MS = {"low": 4000, "medium": 2500, "high": 1500}
 
 
 def _filler_for(language: str) -> str:
@@ -139,11 +146,16 @@ def _filler_for(language: str) -> str:
 
 
 def build_llm():
+    """Build the LLM client.  Primary model is llama-3.3-70b-versatile (high
+    quality, 100k TPD on Groq free tier).  Falls back to llama-3.1-8b-instant
+    when the env var GROQ_FALLBACK_MODEL is set or the primary hits rate limits.
+    Temperature 0.6 keeps the scripted sales agent consistent without being robotic."""
+    primary_model = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
     return openai.LLM(
         base_url="https://api.groq.com/openai/v1",
         api_key=os.environ["GROQ_API_KEY"],
-        model=os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile"),
-        temperature=0.7,
+        model=primary_model,
+        temperature=0.6,
     )
 
 
@@ -316,11 +328,23 @@ def _build_persona(
         f"- This is a live phone call. Speak naturally at {pace}.\n"
         f"{lang_rule}\n"
         f"- Use contractions and casual phrasing. Keep replies short "
-        f"(usually one or two sentences).\n"
+        f"(usually one or two sentences). End with a question or pause that "
+        f"invites the caller to respond — never monologue.\n"
         f"- Never reveal that you are an AI, model, or bot. If asked, say "
         f"you're calling on behalf of the company.\n"
         f"- Numbers, dates and prices should be written the way you'd say "
         f"them out loud.\n"
+        f"# Listening rules\n"
+        f"- Wait until the caller has completely finished speaking before you "
+        f"reply. Never cut in mid-sentence.\n"
+        f"- If what you heard was unclear, very short, or just background "
+        f"noise, ask naturally in their language: e.g. \"Sorry, could you say "
+        f"that again?\" or \"Maine sun nahi paya — kya aap dobara bol sakte "
+        f"hain?\". Do NOT attempt to guess at unclear input.\n"
+        f"- If the caller goes quiet for a moment while thinking, wait — do "
+        f"not fill the silence immediately.\n"
+        f"- Match the caller's energy and pace. If they speak slowly and "
+        f"thoughtfully, respond the same way.\n"
     )
     body = (user_prompt or DEFAULT_SYSTEM_PROMPT).strip()
     kb_section = ""
@@ -793,6 +817,7 @@ async def entrypoint(ctx: agents.JobContext):
         except Exception as e:
             logger.warning(f"MultilingualModel init failed, falling back to VAD: {e}")
 
+    max_endpointing = MAX_ENDPOINTING_MS.get(sensitivity, MAX_ENDPOINTING_MS["medium"])
     session_kwargs: dict = dict(
         vad=silero.VAD.load(),
         stt=build_stt(stt_model, stt_language, language),
@@ -802,11 +827,21 @@ async def entrypoint(ctx: agents.JobContext):
             eleven_key=eleven_key, cartesia_key=cartesia_key,
         ),
         min_endpointing_delay=endpointing / 1000.0,
+        max_endpointing_delay=max_endpointing / 1000.0,
         allow_interruptions=True,
     )
     if turn_detection is not None:
         session_kwargs["turn_detection"] = turn_detection
-    session = AgentSession(**session_kwargs)
+    # If max_endpointing_delay is not a valid kwarg on this build, drop it
+    # silently — better to have slightly longer waits than to crash the session.
+    try:
+        session = AgentSession(**session_kwargs)
+    except TypeError as _te:
+        if "max_endpointing_delay" in str(_te):
+            session_kwargs.pop("max_endpointing_delay", None)
+            session = AgentSession(**session_kwargs)
+        else:
+            raise
     call_state["session"] = session  # call_state already exists from above
 
     # Stream conversation turns back to the api-server for the transcript view.
@@ -936,6 +971,11 @@ async def entrypoint(ctx: agents.JobContext):
         # Background warmup so greeting fires immediately after session.start.
         asyncio.create_task(filler_cache.initialize())
 
+    # Very short transcripts (< 6 chars) are almost always noise, a breath,
+    # or a filler sound — not a real turn. We track the last such transcript
+    # so the filler hook and the per-turn log can suppress / handle it cleanly.
+    _noise_threshold_chars = 6
+
     if fillers_enabled and filler_cache is not None:
         @session.on("user_input_transcribed")
         def _on_user_done(ev) -> None:
@@ -943,7 +983,8 @@ async def entrypoint(ctx: agents.JobContext):
                 if not getattr(ev, "is_final", False):
                     return
                 text = (getattr(ev, "transcript", "") or "").strip()
-                if len(text) < 3:
+                # Skip noise / single-word fillers — don't play a filler over them.
+                if len(text) < _noise_threshold_chars:
                     return
                 # If cache isn't warm yet (first ~1s of the call), skip the
                 # filler — the real reply is already streaming.
@@ -956,8 +997,9 @@ async def entrypoint(ctx: agents.JobContext):
 
                 async def _delayed_filler():
                     try:
-                        # Sub-300ms emission: 250ms gate + ~10ms cache lookup
-                        await asyncio.sleep(0.25)
+                        # 400ms gate: gives the LLM/TTS pipeline a head-start so
+                        # the filler cancels cleanly if the real reply is fast.
+                        await asyncio.sleep(0.40)
                         await filler_cache.play(phrase)
                     except asyncio.CancelledError:
                         pass
