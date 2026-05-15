@@ -231,7 +231,7 @@ def build_llm(api_key: str = "", provider: str = "groq", gemini_key: str = "") -
             return openai.LLM(
                 base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
                 api_key=key,
-                model=os.getenv("GEMINI_MODEL", "gemini-2.0-flash"),
+                model=os.getenv("GEMINI_MODEL", "models/gemini-2.5-flash-lite"),
                 temperature=0.6,
             )
     # Groq (default / fallback)
