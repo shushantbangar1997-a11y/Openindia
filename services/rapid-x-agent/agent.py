@@ -27,6 +27,7 @@ import os
 import math
 import inspect
 import random
+import time
 import urllib.request
 from typing import Optional
 
@@ -63,9 +64,13 @@ def _clean_key(value: str) -> str:
 
 # Sanitize all API keys in-place so copy-paste Unicode artefacts never
 # reach HTTP headers (httpx encodes header values as ASCII).
-for _env_key in ("GROQ_API_KEY", "DEEPGRAM_API_KEY",
-                 "LIVEKIT_API_KEY", "LIVEKIT_API_SECRET",
-                 "ELEVENLABS_API_KEY", "CARTESIA_API_KEY"):
+_ALL_KEY_VARS = (
+    ["GROQ_API_KEY", "DEEPGRAM_API_KEY",
+     "LIVEKIT_API_KEY", "LIVEKIT_API_SECRET",
+     "ELEVENLABS_API_KEY", "CARTESIA_API_KEY"]
+    + [f"GROQ_API_KEY_{i}" for i in range(2, 11)]
+)
+for _env_key in _ALL_KEY_VARS:
     _v = os.getenv(_env_key, "")
     if _v:
         os.environ[_env_key] = _clean_key(_v)
@@ -145,16 +150,81 @@ def _filler_for(language: str) -> str:
     return random.choice(bank)
 
 
-def build_llm():
-    """Build the LLM client.  Primary model is llama-3.3-70b-versatile (high
-    quality, 100k TPD on Groq free tier).  Falls back to llama-3.1-8b-instant
-    when the env var GROQ_FALLBACK_MODEL is set or the primary hits rate limits.
-    Temperature 0.6 keeps the scripted sales agent consistent without being robotic."""
-    primary_model = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
+class _GroqPool:
+    """Round-robin pool of Groq API keys with automatic 429 failover.
+
+    Load order:  GROQ_API_KEY  →  GROQ_API_KEY_2  →  …  →  GROQ_API_KEY_10.
+    Duplicate keys are deduplicated. On rate-limit the key goes on a 90-second
+    cooldown; the next available key is returned transparently.
+    All state is class-level so the pool is shared across concurrent calls."""
+
+    COOLDOWN_S: float = 90.0   # seconds before retrying an exhausted key
+
+    _keys: list[str] = []
+    _idx: int = 0
+    _exhausted_until: dict[str, float] = {}
+
+    @classmethod
+    def _load(cls) -> None:
+        if cls._keys:
+            return
+        seen: set[str] = set()
+        for i in range(1, 11):
+            var = "GROQ_API_KEY" if i == 1 else f"GROQ_API_KEY_{i}"
+            k = os.getenv(var, "").strip()
+            if k and k not in seen:
+                cls._keys.append(k)
+                seen.add(k)
+        if not cls._keys:
+            raise RuntimeError("No GROQ_API_KEY found in environment")
+        logger.info(f"Groq key pool: {len(cls._keys)} key(s) loaded")
+
+    @classmethod
+    def pick(cls) -> str:
+        """Return the next non-exhausted key (round-robin)."""
+        cls._load()
+        now = time.monotonic()
+        for _ in range(len(cls._keys)):
+            key = cls._keys[cls._idx % len(cls._keys)]
+            cls._idx += 1
+            if cls._exhausted_until.get(key, 0.0) <= now:
+                return key
+        # All keys on cooldown — return the one whose cooldown expires soonest.
+        best = min(cls._keys, key=lambda k: cls._exhausted_until.get(k, 0.0))
+        logger.warning("All Groq keys cooling down — reusing soonest-available key")
+        return best
+
+    @classmethod
+    def mark_exhausted(cls, key: str) -> None:
+        """Mark a key as rate-limited; suppress it for COOLDOWN_S seconds."""
+        cls._exhausted_until[key] = time.monotonic() + cls.COOLDOWN_S
+        masked = f"...{key[-6:]}" if len(key) > 6 else "***"
+        remaining = sum(
+            1 for k in cls._keys
+            if cls._exhausted_until.get(k, 0.0) <= time.monotonic()
+        )
+        logger.warning(
+            f"Groq key {masked} rate-limited — cooling {cls.COOLDOWN_S}s; "
+            f"{remaining}/{len(cls._keys)} key(s) still available"
+        )
+
+    @classmethod
+    def count(cls) -> int:
+        cls._load()
+        return len(cls._keys)
+
+
+def build_llm(api_key: str = "") -> openai.LLM:
+    """Build a Groq LLM client using the given key (or the pool's next key).
+
+    Temperature 0.6 keeps the scripted sales agent consistent.
+    The pool is shared across all concurrent calls so round-robin is global."""
+    model = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
+    key = api_key or _GroqPool.pick()
     return openai.LLM(
         base_url="https://api.groq.com/openai/v1",
-        api_key=os.environ["GROQ_API_KEY"],
-        model=primary_model,
+        api_key=key,
+        model=model,
         temperature=0.6,
     )
 
@@ -817,11 +887,16 @@ async def entrypoint(ctx: agents.JobContext):
         except Exception as e:
             logger.warning(f"MultilingualModel init failed, falling back to VAD: {e}")
 
+    # Pick the first LLM key for this call. The pool rotates globally so
+    # concurrent calls automatically get different keys.
+    _active_key: list[str] = [_GroqPool.pick()]
+    logger.info(f"LLM key pool: {_GroqPool.count()} key(s); assigned ...{_active_key[0][-6:]}")
+
     max_endpointing = MAX_ENDPOINTING_MS.get(sensitivity, MAX_ENDPOINTING_MS["medium"])
     session_kwargs: dict = dict(
         vad=silero.VAD.load(),
         stt=build_stt(stt_model, stt_language, language),
-        llm=build_llm(),
+        llm=build_llm(_active_key[0]),
         tts=build_tts(
             tts_provider, voice_id, language, speaking_speed,
             eleven_key=eleven_key, cartesia_key=cartesia_key,
@@ -1021,14 +1096,19 @@ async def entrypoint(ctx: agents.JobContext):
 
     # Latency HUD: push STT/LLM/TTS timing events down a LiveKit data
     # channel (topic="latency") so the browser test modal can render a HUD.
+    # Also clears the watchdog "pending" flag so we know the LLM responded.
+    _llm_pending: dict = {"active": False, "since": 0.0, "last_text": ""}
+
     @session.on("metrics_collected")
     def _on_metrics(ev) -> None:
         try:
             m = getattr(ev, "metrics", None)
             if m is None:
                 return
-            # Each metric class has different fields; we extract what we can.
             kind = type(m).__name__
+            # LLM metric firing = the LLM responded successfully.
+            if "LLM" in kind or "llm" in kind.lower():
+                _llm_pending["active"] = False
             payload: dict = {"kind": kind}
             for attr in ("ttft", "ttfb", "duration", "audio_duration", "end_of_utterance_delay"):
                 val = getattr(m, attr, None)
@@ -1037,6 +1117,68 @@ async def entrypoint(ctx: agents.JobContext):
             asyncio.create_task(_publish_latency(ctx.room, payload))
         except Exception as e:
             logger.debug(f"metrics hook failed: {e}")
+
+    @session.on("agent_state_changed")
+    def _on_state_for_watchdog(ev) -> None:
+        try:
+            new_state = getattr(ev, "new_state", None) or getattr(ev, "state", None)
+            if new_state == "speaking":
+                _llm_pending["active"] = False
+        except Exception:
+            pass
+
+    # Track the last final transcript so we can re-trigger if the LLM stalls.
+    @session.on("user_input_transcribed")
+    def _on_transcript_watchdog(ev) -> None:
+        try:
+            if not getattr(ev, "is_final", False):
+                return
+            text = (getattr(ev, "transcript", "") or "").strip()
+            if len(text) < 4:
+                return
+            _llm_pending["active"] = True
+            _llm_pending["since"] = time.monotonic()
+            _llm_pending["last_text"] = text
+        except Exception:
+            pass
+
+    async def _llm_stall_watchdog() -> None:
+        """Detect a stalled LLM call (rate-limited key) and swap to the next key.
+
+        If the caller finished speaking and no LLM response arrives within
+        STALL_TIMEOUT seconds, we mark the current key exhausted, build a new
+        LLM with the next pool key, swap it into the session, and re-trigger
+        reply generation — all invisible to the caller (they just hear a slightly
+        longer pause than normal)."""
+        STALL_TIMEOUT = 9.0   # seconds of silence before assuming rate-limit
+        CHECK_INTERVAL = 2.0  # polling interval
+        model = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
+        while True:
+            await asyncio.sleep(CHECK_INTERVAL)
+            if not _llm_pending["active"]:
+                continue
+            elapsed = time.monotonic() - _llm_pending["since"]
+            if elapsed < STALL_TIMEOUT:
+                continue
+            # LLM appears stalled — swap key and retry.
+            _llm_pending["active"] = False
+            old_key = _active_key[0]
+            _GroqPool.mark_exhausted(old_key)
+            new_key = _GroqPool.pick()
+            _active_key[0] = new_key
+            new_llm = build_llm(new_key)
+            try:
+                session.llm = new_llm  # type: ignore[attr-defined]
+                logger.info(
+                    f"LLM key swapped after {elapsed:.1f}s stall; "
+                    f"new key ...{new_key[-6:]}"
+                )
+                # Re-trigger reply with the new key.
+                await session.generate_reply()
+            except Exception as _e:
+                logger.warning(f"LLM key swap/retry failed: {_e}")
+
+    asyncio.create_task(_llm_stall_watchdog())
 
     # call_state was initialised after callee joined (above). Pass it to the
     # agent class builder so tool closures (end_call in particular) can
