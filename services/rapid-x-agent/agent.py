@@ -126,7 +126,7 @@ FILLERS = {
     "de": ["mm-hmm,", "okay,", "verstehe,", "mal sehen,", "klar,"],
     "it": ["mm-hmm,", "okay,", "vediamo,", "certo,", "capisco,"],
     "pt": ["mm-hmm,", "claro,", "tá,", "entendi,", "deixa ver,"],
-    "hi": ["हाँ,", "ठीक है,", "अच्छा,", "एक मिनट,"],
+    "hi": ["mm-hmm,", "one moment,"],
     "ja": ["うん,", "はい,", "そうですね,", "ええと,"],
     "zh": ["嗯,", "好的,", "我想想,", "明白了,"],
     "ko": ["음,", "네,", "그렇군요,", "잠시만요,"],
@@ -231,8 +231,9 @@ def build_llm(api_key: str = "", provider: str = "groq", gemini_key: str = "") -
             return openai.LLM(
                 base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
                 api_key=key,
-                model=os.getenv("GEMINI_MODEL", "models/gemini-2.5-flash-lite"),
+                model=os.getenv("GEMINI_MODEL", "models/gemini-2.5-flash"),
                 temperature=0.6,
+                max_tokens=300,
             )
     # Groq (default / fallback)
     model = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
@@ -404,18 +405,36 @@ def _build_persona(
             f"- Detect the caller's spoken language on each turn and reply in "
             f"that exact language. Default to {lang_label} only if you can't tell."
         )
+        formality_guard = (
+            f"- The caller may speak in a mix of languages or switch languages "
+            f"mid-call. Always respond in whichever language they use, but "
+            f"maintain your professional persona in every language — do not "
+            f"mirror casual slang, informal markers, or honorifics (Ji, G, "
+            f"Sahib, Bhai, Yaar, or any equivalent) the caller uses."
+        )
     else:
         lang_rule = (
             f"- Always reply in language: {lang_label}. If the caller switches "
             f"language mid-call, follow them."
         )
+        formality_guard = (
+            f"- Maintain a professional tone at all times — do not adopt the "
+            f"caller's casual register, slang, or informal honorifics (Ji, G, "
+            f"Sahib, Bhai, or equivalents) regardless of how informally they speak."
+        )
     header = (
         f"# Conversation rules\n"
         f"- This is a live phone call. Speak naturally at {pace}.\n"
         f"{lang_rule}\n"
-        f"- Use contractions and casual phrasing. Keep replies short "
-        f"(usually one or two sentences). End with a question or pause that "
-        f"invites the caller to respond — never monologue.\n"
+        f"{formality_guard}\n"
+        f"- NEVER begin a reply with a filler word or acknowledgement phrase "
+        f"('okay', 'right', 'got it', 'sure', 'of course', 'absolutely', "
+        f"'Acha', 'Theek hai', 'Samajh gaya', or any equivalent in any "
+        f"language). Jump directly into your answer.\n"
+        f"- Hard limit: maximum 2 sentences per turn. If more is needed, ask "
+        f"a follow-up question on the next turn.\n"
+        f"- Use contractions and natural phrasing. End with a question or "
+        f"pause that invites the caller to respond — never monologue.\n"
         f"- Never reveal that you are an AI, model, or bot. If asked, say "
         f"you're calling on behalf of the company.\n"
         f"- Numbers, dates and prices should be written the way you'd say "
@@ -429,8 +448,8 @@ def _build_persona(
         f"hain?\". Do NOT attempt to guess at unclear input.\n"
         f"- If the caller goes quiet for a moment while thinking, wait — do "
         f"not fill the silence immediately.\n"
-        f"- Match the caller's energy and pace. If they speak slowly and "
-        f"thoughtfully, respond the same way.\n"
+        f"- Match the caller's pace. If they speak slowly and thoughtfully, "
+        f"respond the same way.\n"
     )
     body = (user_prompt or DEFAULT_SYSTEM_PROMPT).strip()
     kb_section = ""
