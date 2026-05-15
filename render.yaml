@@ -1,0 +1,82 @@
+services:
+  # ── Web Service: API + Frontend (served as static files by Express) ──────────
+  - type: web
+    name: rapid-x-api
+    runtime: node
+    plan: starter
+    buildCommand: >
+      npm install -g pnpm@10 &&
+      pnpm install --no-frozen-lockfile &&
+      NODE_ENV=production BASE_PATH=/ pnpm --filter @workspace/rapid-x run build &&
+      pnpm --filter @workspace/api-server run build
+    startCommand: node --enable-source-maps artifacts/api-server/dist/index.mjs
+    healthCheckPath: /api/agents
+    envVars:
+      - key: NODE_ENV
+        value: production
+      # Render injects PORT automatically — no need to set it here
+      # Data directory — mount the persistent disk here for agents/calls to survive redeploys
+      - key: DATA_DIR
+        value: /var/data/rapid-x
+      # LiveKit
+      - key: LIVEKIT_URL
+        sync: false
+      - key: LIVEKIT_API_KEY
+        sync: false
+      - key: LIVEKIT_API_SECRET
+        sync: false
+      # SIP / outbound calling
+      - key: VOBIZ_SIP_TRUNK_ID
+        sync: false
+      # STT + Deepgram TTS (free)
+      - key: DEEPGRAM_API_KEY
+        sync: false
+      # LLM providers
+      - key: GROQ_API_KEY
+        sync: false
+      - key: GEMINI_API_KEY
+        sync: false
+      # Premium TTS (optional — UI shows amber hint when missing)
+      - key: ELEVENLABS_API_KEY
+        sync: false
+      - key: CARTESIA_API_KEY
+        sync: false
+    disk:
+      name: rapid-x-data
+      mountPath: /var/data/rapid-x
+      sizeGB: 1
+
+  # ── Background Worker: Python LiveKit Agent ──────────────────────────────────
+  - type: worker
+    name: rapid-x-agent
+    runtime: python
+    plan: starter
+    rootDir: services/rapid-x-agent
+    buildCommand: pip install -r requirements.txt
+    startCommand: python agent.py start
+    envVars:
+      # LiveKit
+      - key: LIVEKIT_URL
+        sync: false
+      - key: LIVEKIT_API_KEY
+        sync: false
+      - key: LIVEKIT_API_SECRET
+        sync: false
+      # STT + Deepgram TTS
+      - key: DEEPGRAM_API_KEY
+        sync: false
+      # LLM
+      - key: GROQ_API_KEY
+        sync: false
+      - key: GEMINI_API_KEY
+        sync: false
+      # Premium TTS (optional)
+      - key: ELEVENLABS_API_KEY
+        sync: false
+      - key: CARTESIA_API_KEY
+        sync: false
+      # URL of the web service above — the agent streams transcripts here.
+      # Set this after the web service is first deployed and you know its URL.
+      # Example: https://rapid-x-api.onrender.com
+      - key: INTERNAL_API_URL
+        sync: false

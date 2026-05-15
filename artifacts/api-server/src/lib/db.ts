@@ -127,7 +127,9 @@ type Store = {
   knowledge_docs?: KnowledgeDocMeta[];
 };
 
-const DATA_DIR = path.resolve(process.cwd(), "data");
+const DATA_DIR = process.env.DATA_DIR
+  ? path.resolve(process.env.DATA_DIR)
+  : path.resolve(process.cwd(), "data");
 const STORE_PATH = path.join(DATA_DIR, "store.runtime.json");
 const SEED_PATH = path.join(DATA_DIR, "store.seed.json");
 const DOCS_DIR = path.join(DATA_DIR, "docs");
