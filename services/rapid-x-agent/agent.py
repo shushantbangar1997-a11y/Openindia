@@ -183,20 +183,26 @@ def build_tts(
     if provider == "elevenlabs":
         if elevenlabs_plugin and eleven_key:
             try:
-                Voice = getattr(elevenlabs_plugin, "Voice", None)
-                if Voice is not None:
-                    voice = Voice(id=voice_id, name=voice_id, category="premade")
-                    return elevenlabs_plugin.TTS(
-                        voice=voice,
-                        model="eleven_multilingual_v2",
-                        api_key=eleven_key,
-                    )
-                # Newer plugin signature: voice_id kwarg.
+                base_lang = (language or "en").split("-")[0].lower()
+                # Current livekit-agents ElevenLabs plugin: voice_id= (not voice=).
+                # Pass language= so the model generates audio in the right language
+                # (critical for Hindi/Hinglish instead of defaulting to English phonetics).
                 return elevenlabs_plugin.TTS(
                     voice_id=voice_id,
                     model="eleven_multilingual_v2",
                     api_key=eleven_key,
+                    language=base_lang,
                 )
+            except TypeError:
+                # Older plugin build without language= param — try without it.
+                try:
+                    return elevenlabs_plugin.TTS(
+                        voice_id=voice_id,
+                        model="eleven_multilingual_v2",
+                        api_key=eleven_key,
+                    )
+                except Exception as e:
+                    logger.warning(f"ElevenLabs init failed, falling back: {e}")
             except Exception as e:
                 logger.warning(f"ElevenLabs init failed, falling back: {e}")
         else:
