@@ -102,6 +102,8 @@ export type CallRecord = {
 export type GlobalSettings = {
   elevenlabs_api_key?: string;
   cartesia_api_key?: string;
+  gemini_api_key?: string;
+  llm_provider?: "groq" | "gemini";
 };
 
 export type KnowledgeDoc = {

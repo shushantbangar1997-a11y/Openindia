@@ -348,6 +348,8 @@ const internalKeys: RequestHandler = async (req, res) => {
   const merged = {
     elevenlabs: a.provider_api_keys?.elevenlabs || globalSettings.elevenlabs_api_key,
     cartesia: a.provider_api_keys?.cartesia || globalSettings.cartesia_api_key,
+    gemini: globalSettings.gemini_api_key,
+    llm_provider: globalSettings.llm_provider ?? "groq",
   };
   res.json({ provider_api_keys: merged });
 };

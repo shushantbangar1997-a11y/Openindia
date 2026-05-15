@@ -214,11 +214,27 @@ class _GroqPool:
         return len(cls._keys)
 
 
-def build_llm(api_key: str = "") -> openai.LLM:
-    """Build a Groq LLM client using the given key (or the pool's next key).
+def build_llm(api_key: str = "", provider: str = "groq", gemini_key: str = "") -> openai.LLM:
+    """Build an LLM client for the given provider.
 
-    Temperature 0.6 keeps the scripted sales agent consistent.
-    The pool is shared across all concurrent calls so round-robin is global."""
+    provider="groq"   → Groq llama-3.3-70b-versatile via the key pool.
+                        api_key overrides the pool (used for mid-call key swaps).
+    provider="gemini" → Google Gemini 2.0 Flash via OpenAI-compatible endpoint.
+                        gemini_key must be provided (no pool for Gemini yet).
+
+    Temperature 0.6 keeps the scripted sales agent consistent."""
+    if provider == "gemini":
+        key = gemini_key or os.getenv("GEMINI_API_KEY", "")
+        if not key:
+            logger.warning("Gemini selected but no GEMINI_API_KEY — falling back to Groq")
+        else:
+            return openai.LLM(
+                base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
+                api_key=key,
+                model=os.getenv("GEMINI_MODEL", "gemini-2.0-flash"),
+                temperature=0.6,
+            )
+    # Groq (default / fallback)
     model = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
     key = api_key or _GroqPool.pick()
     return openai.LLM(
@@ -767,6 +783,8 @@ async def entrypoint(ctx: agents.JobContext):
     # Keys live as locals only — no os.environ mutation = no cross-call bleed.
     eleven_key = ""
     cartesia_key = ""
+    gemini_key = ""
+    llm_provider_setting = "groq"
     # Load internal token once per job, setting the module-level _INTERNAL_TOKEN
     # so all _post_back calls automatically include it.
     internal_token = _load_internal_token()
@@ -782,6 +800,8 @@ async def entrypoint(ctx: agents.JobContext):
                 keys_blob = json.loads(r.read()).get("provider_api_keys") or {}
                 eleven_key = (keys_blob.get("elevenlabs") or "").strip()
                 cartesia_key = (keys_blob.get("cartesia") or "").strip()
+                gemini_key = (keys_blob.get("gemini") or "").strip()
+                llm_provider_setting = (keys_blob.get("llm_provider") or "groq").strip().lower()
         except Exception as e:
             logger.debug(f"Per-agent key fetch failed (using env vars): {e}")
 
@@ -890,13 +910,16 @@ async def entrypoint(ctx: agents.JobContext):
     # Pick the first LLM key for this call. The pool rotates globally so
     # concurrent calls automatically get different keys.
     _active_key: list[str] = [_GroqPool.pick()]
-    logger.info(f"LLM key pool: {_GroqPool.count()} key(s); assigned ...{_active_key[0][-6:]}")
+    if llm_provider_setting == "gemini":
+        logger.info(f"LLM provider: gemini (gemini-2.0-flash), key={'set' if gemini_key else 'missing'}")
+    else:
+        logger.info(f"LLM key pool: {_GroqPool.count()} key(s); assigned ...{_active_key[0][-6:]}")
 
     max_endpointing = MAX_ENDPOINTING_MS.get(sensitivity, MAX_ENDPOINTING_MS["medium"])
     session_kwargs: dict = dict(
         vad=silero.VAD.load(),
         stt=build_stt(stt_model, stt_language, language),
-        llm=build_llm(_active_key[0]),
+        llm=build_llm(_active_key[0], provider=llm_provider_setting, gemini_key=gemini_key),
         tts=build_tts(
             tts_provider, voice_id, language, speaking_speed,
             eleven_key=eleven_key, cartesia_key=cartesia_key,
@@ -1145,6 +1168,7 @@ async def entrypoint(ctx: agents.JobContext):
     async def _llm_stall_watchdog() -> None:
         """Detect a stalled LLM call (rate-limited key) and swap to the next key.
 
+        Only applies to Groq where the key pool supports rotation.
         If the caller finished speaking and no LLM response arrives within
         STALL_TIMEOUT seconds, we mark the current key exhausted, build a new
         LLM with the next pool key, swap it into the session, and re-trigger
@@ -1152,7 +1176,6 @@ async def entrypoint(ctx: agents.JobContext):
         longer pause than normal)."""
         STALL_TIMEOUT = 9.0   # seconds of silence before assuming rate-limit
         CHECK_INTERVAL = 2.0  # polling interval
-        model = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
         while True:
             await asyncio.sleep(CHECK_INTERVAL)
             if not _llm_pending["active"]:
@@ -1160,13 +1183,18 @@ async def entrypoint(ctx: agents.JobContext):
             elapsed = time.monotonic() - _llm_pending["since"]
             if elapsed < STALL_TIMEOUT:
                 continue
-            # LLM appears stalled — swap key and retry.
+            # LLM appears stalled.
             _llm_pending["active"] = False
+            if llm_provider_setting == "gemini":
+                # No key pool for Gemini — nothing to swap, just log.
+                logger.warning(f"Gemini LLM stalled for {elapsed:.1f}s (no pool to swap)")
+                continue
+            # Groq: swap key and retry.
             old_key = _active_key[0]
             _GroqPool.mark_exhausted(old_key)
             new_key = _GroqPool.pick()
             _active_key[0] = new_key
-            new_llm = build_llm(new_key)
+            new_llm = build_llm(new_key, provider="groq")
             try:
                 session.llm = new_llm  # type: ignore[attr-defined]
                 logger.info(

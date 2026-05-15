@@ -7,7 +7,13 @@ function redactSettings(s: GlobalSettings): Record<string, unknown> {
   return {
     elevenlabs_api_key: s.elevenlabs_api_key ? "***" : null,
     cartesia_api_key: s.cartesia_api_key ? "***" : null,
+    gemini_api_key: s.gemini_api_key ? "***" : null,
+    llm_provider: s.llm_provider ?? "groq",
   };
+}
+
+function sanitizeKey(value: unknown): string {
+  return typeof value === "string" ? value.trim() : "";
 }
 
 const getOne: RequestHandler = async (_req, res) => {
@@ -16,34 +22,40 @@ const getOne: RequestHandler = async (_req, res) => {
 };
 
 const patch: RequestHandler = async (req, res) => {
-  const { elevenlabs_api_key, cartesia_api_key } = (req.body ?? {}) as {
+  const body = (req.body ?? {}) as {
     elevenlabs_api_key?: string | null;
     cartesia_api_key?: string | null;
+    gemini_api_key?: string | null;
+    llm_provider?: string | null;
   };
-  const patch: Partial<GlobalSettings> = {};
-  if (elevenlabs_api_key !== undefined) {
-    const trimmed = typeof elevenlabs_api_key === "string" ? elevenlabs_api_key.trim() : "";
-    if (elevenlabs_api_key === null || elevenlabs_api_key === "") {
-      patch.elevenlabs_api_key = undefined;
+  const p: Partial<GlobalSettings> = {};
+
+  for (const field of ["elevenlabs_api_key", "cartesia_api_key", "gemini_api_key"] as const) {
+    const raw = body[field];
+    if (raw === undefined) continue;
+    const trimmed = sanitizeKey(raw);
+    if (raw === null || raw === "") {
+      p[field] = undefined;
     } else if (trimmed.length >= 10 && trimmed.length <= 300) {
-      patch.elevenlabs_api_key = trimmed;
+      p[field] = trimmed;
     } else {
-      res.status(400).json({ error: "elevenlabs_api_key looks invalid" });
+      res.status(400).json({ error: `${field} looks invalid` });
       return;
     }
   }
-  if (cartesia_api_key !== undefined) {
-    const trimmed = typeof cartesia_api_key === "string" ? cartesia_api_key.trim() : "";
-    if (cartesia_api_key === null || cartesia_api_key === "") {
-      patch.cartesia_api_key = undefined;
-    } else if (trimmed.length >= 10 && trimmed.length <= 300) {
-      patch.cartesia_api_key = trimmed;
+
+  if (body.llm_provider !== undefined) {
+    if (body.llm_provider === null || body.llm_provider === "groq") {
+      p.llm_provider = "groq";
+    } else if (body.llm_provider === "gemini") {
+      p.llm_provider = "gemini";
     } else {
-      res.status(400).json({ error: "cartesia_api_key looks invalid" });
+      res.status(400).json({ error: "llm_provider must be 'groq' or 'gemini'" });
       return;
     }
   }
-  const updated = await updateSettings(patch);
+
+  const updated = await updateSettings(p);
   res.json({ settings: redactSettings(updated) });
 };
 
